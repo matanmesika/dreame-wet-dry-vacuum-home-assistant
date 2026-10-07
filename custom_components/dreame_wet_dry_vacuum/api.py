@@ -40,6 +40,20 @@ REGION_URLS = {
 
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
+# Safe bootstrap choices for automatic discovery. The account country is an ISO
+# country code and is deliberately separate from the Dreame cloud backend.
+COUNTRY_BOOTSTRAP_REGION = {
+    "CN": "cn",
+    "US": "us",
+    "RU": "ru",
+    "TW": "tw",
+    "SG": "sg",
+    "IN": "in",
+    "KR": "kr",
+}
+
+AUTO_REGION_ORDER = ("eu", "i2", "de", "sg", "us", "in", "tw", "kr", "ru", "cn")
+
 
 def _md5_password(password: str) -> str:
     return hashlib.md5((password + DREAME_PASSWORD_SALT).encode()).hexdigest()
@@ -99,16 +113,41 @@ class DreameAPI:
     ) -> None:
         self._username = username
         self._password = password
-        self._region = region
+        self._requested_region = region
         self._country = country.upper()
-        if region not in REGION_URLS:
+        if region == "auto":
+            self._region = COUNTRY_BOOTSTRAP_REGION.get(self._country, "eu")
+        elif region in REGION_URLS:
+            self._region = region
+        else:
             raise ValueError(f"Unsupported Dreame cloud region: {region}")
-        self._base_url = REGION_URLS[region]
+        self._base_url = REGION_URLS[self._region]
         self._access_token: str | None = None
         self._uid: str | None = None
         self._session = session
         self._owns_session = session is None
+        self._rlc = _compute_rlc(self._region, self._country)
+
+    def _set_region(self, region: str) -> None:
+        """Switch to a known Dreame cloud backend without re-authenticating."""
+        if region not in REGION_URLS:
+            return
+        self._region = region
+        self._base_url = REGION_URLS[region]
         self._rlc = _compute_rlc(region, self._country)
+
+    def _set_domain(self, domain: str) -> None:
+        """Use a Dreame-provided API domain when it is safe to trust."""
+        host = domain.removeprefix("https://").removeprefix("http://").split("/", 1)[0]
+        host = host.split(":", 1)[0]
+        if not host.endswith(".dreame.tech"):
+            _LOGGER.warning("Ignoring unexpected Dreame login domain: %s", domain)
+            return
+        self._base_url = f"https://{host}:13267"
+        prefix = host.split(".", 1)[0]
+        if prefix in REGION_URLS:
+            self._region = prefix
+            self._rlc = _compute_rlc(prefix, self._country)
 
     @property
     def uid(self) -> str | None:
@@ -181,7 +220,24 @@ class DreameAPI:
 
         self._access_token = result["access_token"]
         self._uid = result.get("uid")
-        _LOGGER.debug("Dreame login successful, uid=%s", self._uid)
+
+        # Dreame may tell us the account's actual backend in the login response.
+        # Prefer that metadata over guessing from the user's physical country.
+        response_region = str(result.get("region") or "").lower()
+        response_domain = str(result.get("domain") or "").strip().lower()
+        if self._requested_region == "auto":
+            if response_region in REGION_URLS:
+                self._set_region(response_region)
+            elif response_domain:
+                self._set_domain(response_domain)
+
+        _LOGGER.debug(
+            "Dreame login successful, uid=%s requested_region=%s active_region=%s country=%s",
+            self._uid,
+            self._requested_region,
+            self._region,
+            self._country,
+        )
 
     async def _authed_post(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         """POST with bearer auth; re-login and retry exactly once on 401.
@@ -212,8 +268,18 @@ class DreameAPI:
                 raise DreameAPIError(f"Request failed: {err}") from err
         raise DreameAPIError("Still unauthorized after re-login")
 
-    async def get_devices(self) -> list[dict[str, Any]]:
-        """Return list of devices bound to the account."""
+    @staticmethod
+    def _extract_device_records(result: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract device records from known Dreame device-list response shapes."""
+        data = result.get("data") or {}
+        records = (data.get("page") or {}).get("records") or []
+        if not records:
+            records = data.get("records") or []
+        return records
+
+    async def _get_devices_from_url(
+        self, base_url: str, *, relogin_on_401: bool
+    ) -> list[dict[str, Any]]:
         payload = {
             "sharedStatus": 1,
             "current": 1,
@@ -221,15 +287,52 @@ class DreameAPI:
             "lang": "en",
             "timestamp": int(time.time() * 1000),
         }
-        result = await self._authed_post(
-            self._base_url + ENDPOINTS["device_list"], payload
+        url = base_url + ENDPOINTS["device_list"]
+        if relogin_on_401:
+            result = await self._authed_post(url, payload)
+            return self._extract_device_records(result)
+
+        # Auto-discovery reuses the already-issued bearer token. It must not
+        # retry the user's password against every backend.
+        session = await self._get_session()
+        try:
+            async with session.post(
+                url,
+                headers=self._get_auth_headers(),
+                json=payload,
+                timeout=REQUEST_TIMEOUT,
+            ) as resp:
+                if resp.status != 200:
+                    return []
+                result = await resp.json(content_type=None)
+        except (aiohttp.ClientError, TimeoutError, ValueError):
+            return []
+        return self._extract_device_records(result)
+
+    async def get_devices(self) -> list[dict[str, Any]]:
+        """Return devices and auto-detect the correct cloud backend when requested."""
+        records = await self._get_devices_from_url(
+            self._base_url, relogin_on_401=True
         )
 
-        data = result.get("data") or {}
-        # Dreame nests the list under data.page.records
-        records = (data.get("page") or {}).get("records") or []
-        if not records:
-            records = data.get("records") or []
+        if not records and self._requested_region == "auto":
+            tried = {self._region}
+            for region in AUTO_REGION_ORDER:
+                if region in tried:
+                    continue
+                tried.add(region)
+                candidate_records = await self._get_devices_from_url(
+                    REGION_URLS[region], relogin_on_401=False
+                )
+                if candidate_records:
+                    self._set_region(region)
+                    records = candidate_records
+                    _LOGGER.info(
+                        "Dreame cloud auto-discovery selected region=%s for country=%s",
+                        region,
+                        self._country,
+                    )
+                    break
 
         if records:
             _LOGGER.debug(
@@ -241,12 +344,11 @@ class DreameAPI:
             )
         else:
             _LOGGER.warning(
-                "Dreame device discovery returned no devices for region=%s country=%s; "
-                "response keys=%s data keys=%s",
+                "Dreame device discovery returned no devices for requested_region=%s "
+                "active_region=%s country=%s",
+                self._requested_region,
                 self._region,
                 self._country,
-                sorted(result.keys()),
-                sorted(data.keys()) if isinstance(data, dict) else [],
             )
         return records
 
