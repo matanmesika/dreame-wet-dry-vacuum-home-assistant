@@ -9,8 +9,9 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import CountrySelector
 
-from .api import DreameAPI, DreameAuthError, DreameAPIError
+from .api import DreameAPI, DreameAPIError, DreameAuthError
 from .const import CONF_COUNTRY, CONF_DEVICE_ID, CONF_REGION, DOMAIN, REGIONS
+
 
 def _user_schema(default_country: str | None) -> vol.Schema:
     """Build setup schema using Home Assistant's configured country when available."""

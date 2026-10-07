@@ -138,24 +138,42 @@ class TestLogin:
 
     def test_unknown_region_is_rejected(self):
         with pytest.raises(ValueError):
-            DreameAPI("user", "pw", region="unknown", session=FakeSession(lambda u, k: FakeResponse(200, TOKEN_OK)))
+            DreameAPI("user", "pw", region="unknown", country="IL", session=FakeSession(lambda u, k: FakeResponse(200, TOKEN_OK)))
 
     def test_login_rejected_raises_auth_error(self):
         session = FakeSession(
             lambda url, kw: FakeResponse(401, {"error": "unauthorized"})
         )
-        api = DreameAPI("user", "bad", session=session)
+        api = DreameAPI("user", "bad", country="IL", session=session)
         with pytest.raises(DreameAuthError):
             run(api.login())
 
     def test_close_never_closes_shared_session(self):
         session = FakeSession(lambda url, kw: FakeResponse(200, TOKEN_OK))
-        api = DreameAPI("user", "pw", session=session)
+        api = DreameAPI("user", "pw", country="IL", session=session)
         run(api.close())
         assert session.close_called is False
 
 
 class TestAuthedRequests:
+    @pytest.mark.parametrize("body", [{"data": None}, {}, {"data": {"result": None}}])
+    def test_get_properties_handles_empty_sleeping_response(self, body):
+        def handler(url, kwargs):
+            return FakeResponse(200, TOKEN_OK if "oauth/token" in url else body)
+
+        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
+        assert run(api.get_properties("did", [{"siid": 1, "piid": 8}])) == []
+
+    def test_get_properties_preserves_valid_h14_response(self):
+        rows = [{"siid": 2, "piid": 1, "code": 0, "value": 16}]
+
+        def handler(url, kwargs):
+            body = TOKEN_OK if "oauth/token" in url else {"data": {"result": rows}}
+            return FakeResponse(200, body)
+
+        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
+        assert run(api.get_properties("did", [{"siid": 2, "piid": 1}])) == rows
+
     def _handler(self, unauthorized_data_calls: int):
         """Token endpoint always succeeds; data endpoint 401s N times first."""
         state = {"data_calls": 0, "logins": 0}
@@ -175,14 +193,14 @@ class TestAuthedRequests:
 
     def test_get_devices_happy_path(self):
         handler, state = self._handler(unauthorized_data_calls=0)
-        api = DreameAPI("u", "p", session=FakeSession(handler))
+        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
         devices = run(api.get_devices())
         assert devices == [{"did": 1, "model": "m"}]
         assert state["logins"] == 1  # only the initial ensure-logged-in
 
     def test_401_triggers_single_relogin_then_succeeds(self):
         handler, state = self._handler(unauthorized_data_calls=1)
-        api = DreameAPI("u", "p", session=FakeSession(handler))
+        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
         devices = run(api.get_devices())
         assert devices == [{"did": 1, "model": "m"}]
         assert state["logins"] == 2  # initial + one re-login
@@ -190,7 +208,7 @@ class TestAuthedRequests:
 
     def test_persistent_401_raises_instead_of_recursing(self):
         handler, state = self._handler(unauthorized_data_calls=99)
-        api = DreameAPI("u", "p", session=FakeSession(handler))
+        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
         with pytest.raises(DreameAPIError):
             run(api.get_devices())
         assert state["data_calls"] == 2  # exactly one retry, no infinite loop
@@ -212,7 +230,7 @@ class TestAuthedRequests:
                 },
             )
 
-        api = DreameAPI("u", "p", session=FakeSession(handler))
+        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
         props = run(api.get_status_props("did", ["2.1", "4.5", "1.53", "9.9"]))
         assert props == {"2.1": 7, "4.5": [81], "1.53": None}
 
@@ -233,7 +251,7 @@ class TestAuthedRequests:
                 return FakeResponse(200, TOKEN_OK)
             return FakeResponse(200, {"data": {"page": {"records": [record]}}})
 
-        api = DreameAPI("u", "p", session=FakeSession(handler))
+        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
         snap = run(api.get_device_snapshot("-12345678"))  # str vs int did
         assert snap["name"] == "H14 Pro"
         assert snap["battery"] == 100

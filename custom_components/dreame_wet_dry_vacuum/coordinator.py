@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -326,7 +326,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._h15_mapping_snapshot = dict(usable)
         self._h15_last_changes = {}
-        self._h15_last_scan = datetime.now(timezone.utc)
+        self._h15_last_scan = datetime.now(UTC)
         self._h15_discovery_done = True
 
         if new_keys and self.new_prop_callback:
@@ -366,7 +366,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._h15_mapping_snapshot.update(usable)
         self._h15_last_changes = changes
-        self._h15_last_scan = datetime.now(timezone.utc)
+        self._h15_last_scan = datetime.now(UTC)
 
         if new_keys and self.new_prop_callback:
             self.new_prop_callback(new_keys)

@@ -99,7 +99,7 @@ class DreameMqttClient:
             self._client.loop_stop()
             try:
                 self._client.disconnect()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110 -- best-effort disconnect cleanup
                 pass
             self._client = None
 
@@ -133,5 +133,5 @@ class DreameMqttClient:
         if changed:
             try:
                 self._on_update(dict(self.state))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOGGER.exception("Error in MQTT update callback")

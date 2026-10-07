@@ -95,6 +95,8 @@ The integration creates one device with all of its entities. State is updated in
 
 ### H15 Pro Heat validation profile
 
+The consolidated **0.2.1** test build is documented in [H15_MAPPING.md](H15_MAPPING.md). Manual installation and device validation steps in Hebrew are in [INSTALL_HE.md](INSTALL_HE.md). The diagnostic export includes version/time markers, the full mapping profile and scan differences.
+
 This branch contains an active validation profile for the **Dreame H15 Pro Heat**
 model `dreame.hold.w2449e`.
 

@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -13,14 +14,15 @@ import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DreameAPIError
-from .profiles import H15_PRO_HEAT_MODEL, H15_TARGETED_KEYS
+from .profiles import H15_PRO_HEAT_MODEL, H15_PROPERTY_META, H15_TARGETED_KEYS
 
 _LOGGER = logging.getLogger(__name__)
 
 _MAX_DOWNLOAD_BYTES = 150 * 1024 * 1024
 
 _SENSITIVE_KEYS = {
-    "access_token",
+    "accesstoken",
+    "refreshtoken",
     "authorization",
     "binddomain",
     "deviceid",
@@ -219,7 +221,8 @@ def _inspect_archive_sync(path: Path) -> dict[str, Any]:
 
             try:
                 raw = archive.read(info)
-            except Exception:
+            except (OSError, RuntimeError, zipfile.BadZipFile) as err:
+                _LOGGER.debug("Could not inspect archive member %s: %s", info.filename, err)
                 continue
 
             scanned_total += len(raw)
@@ -312,13 +315,34 @@ async def async_export_h15_app_probe(coordinator) -> dict[str, Any]:
 
     # Refresh the expanded read-only H15 profile first so the exported
     # properties represent the newest cache/live values available.
+    refresh: dict[str, Any] = {"ok": True}
     try:
         await coordinator.async_refresh_h15_mapping()
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 -- diagnostic export preserves partial results
+        refresh = {"ok": False, "error": f"{type(err).__name__}: {err}"}
         _LOGGER.debug("H15 pre-export refresh failed (non-fatal): %s", err)
+
+    manifest = await coordinator.hass.async_add_executor_job(
+        (Path(__file__).parent / "manifest.json").read_text, "utf-8"
+    )
 
     probe: dict[str, Any] = {
         "model": model,
+        "exported_at": datetime.now(UTC).isoformat(),
+        "integration_version": json.loads(manifest)["version"],
+        "mapping_refresh": refresh,
+        "last_mapping_scan": (
+            coordinator.h15_last_scan.isoformat()
+            if coordinator.h15_last_scan is not None else None
+        ),
+        "mapping_changes": coordinator.h15_last_changes,
+        "mapping_profile": {
+            f"{siid}.{piid}": {
+                **meta,
+                "observed": (siid, piid) in coordinator.props,
+            }
+            for (siid, piid), meta in sorted(H15_PROPERTY_META.items())
+        },
         "properties": {
             f"{siid}.{piid}": value
             for (siid, piid), value in sorted(coordinator.props.items())
@@ -330,7 +354,7 @@ async def async_export_h15_app_probe(coordinator) -> dict[str, Any]:
             probe[name] = await awaitable
         except DreameAPIError as err:
             probe[name] = {"_error": str(err)}
-        except Exception as err:  # diagnostic exporter must not break HA
+        except Exception as err:  # noqa: BLE001 -- report individual diagnostic failures
             probe[name] = {"_error": f"{type(err).__name__}: {err}"}
 
     await capture("device_info", api.get_device_info_full(did))
@@ -342,14 +366,21 @@ async def async_export_h15_app_probe(coordinator) -> dict[str, Any]:
     targeted_key_strings = [f"{siid}.{piid}" for siid, piid in H15_TARGETED_KEYS]
     await capture(
         "targeted_status_props",
-        api.get_status_props(did, targeted_key_strings),
+        coordinator._get_status_props_chunked(targeted_key_strings),
     )
+
+    async def read_targeted_live() -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for start in range(0, len(H15_TARGETED_KEYS), 50):
+            chunk = H15_TARGETED_KEYS[start : start + 50]
+            rows.extend(await api.get_properties(
+                did, [{"siid": siid, "piid": piid} for siid, piid in chunk]
+            ))
+        return rows
+
     await capture(
         "targeted_live_props",
-        api.get_properties(
-            did,
-            [{"siid": siid, "piid": piid} for siid, piid in H15_TARGETED_KEYS],
-        ),
+        read_targeted_live(),
     )
 
     output_dir = Path(coordinator.hass.config.path("dreame_h15_probe"))

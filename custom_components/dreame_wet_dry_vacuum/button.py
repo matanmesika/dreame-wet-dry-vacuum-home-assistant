@@ -101,8 +101,9 @@ class DreameH15ExportAppMetadataButton(
                 f"Folder: {result['output_dir']}\n"
                 f"Safe-to-share metadata: {result['share_metadata']}\n"
                 f"Downloaded plugin resources: {downloaded_text}\n\n"
-                "Upload metadata_share.json and appplugin.zip (if present) "
-                "for SIID/PIID mapping analysis."
+                "Upload metadata_share.json for the latest values, mapping profile "
+                "and scan differences. Add appplugin.zip and resources.zip "
+                "only if those packages changed."
             ),
             title="Dreame H15 metadata probe",
             notification_id="dreame_h15_probe",
