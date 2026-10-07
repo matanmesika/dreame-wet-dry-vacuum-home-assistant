@@ -52,7 +52,7 @@ Entity names are translated (English and French) and follow your Home Assistant 
 
 - Home Assistant **2025.1.0** or newer
 - A **Dreame** account (the same one you use in the Dreamehome app) with your vacuum already added
-- Network access from Home Assistant to the Dreame cloud (`eu`/`cn` regions supported)
+- Network access from Home Assistant to the Dreame cloud. Known Dreame cloud endpoints supported by this integration: `eu`, `de`, `cn`, `us`, `ru`, `tw`, `sg`, `in`, `i2`, and `kr`.
 
 Python dependencies (`pycryptodome`, `paho-mqtt`) are installed automatically by Home Assistant from the integration's `manifest.json`.
 
@@ -83,8 +83,11 @@ Once this repository is published to the [HACS default store](https://hacs.xyz/d
 
 1. Go to **Settings → Devices & Services → Add Integration**.
 2. Search for **Dreame Wet & Dry Vacuum**.
-3. Enter your **Dreame account email**, **password**, and **region** (`Europe` or `China / Asia`).
-4. If your account has more than one device, pick the vacuum you want to add.
+3. Enter your **Dreame account email**, **password**, **cloud server region**, and two-letter **country code**. The country code defaults to the country configured in Home Assistant (for example `IL` for Israel).
+4. Select the cloud server used by your Dreamehome account. Available server choices are Europe, Germany/Europe, China, United States, Russia, Taiwan, Singapore/Southeast Asia, India, International, and South Korea.
+5. If your account has more than one device, pick the vacuum you want to add.
+
+The cloud server and account country are deliberately separate. Dreame accounts can use a regional backend that does not match the literal ISO country code. For example, an Israel account can use country code `IL` while connecting through a European or International Dreame backend.
 
 The integration creates one device with all of its entities. State is updated in real time via MQTT, with a web poll every 5 minutes as a safety net.
 
