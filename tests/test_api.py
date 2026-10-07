@@ -85,15 +85,26 @@ class TestHelpers:
         assert len(rlc) == 32  # 16-byte block, hex-encoded
         assert rlc == _compute_rlc("eu")
         assert rlc != _compute_rlc("cn")
+        assert rlc != _compute_rlc("eu", "IL")
+        assert _compute_rlc("eu", "il") == _compute_rlc("eu", "IL")
 
 
 class TestLogin:
     def test_login_success_exposes_uid_and_token(self):
-        session = FakeSession(lambda url, kw: FakeResponse(200, TOKEN_OK))
-        api = DreameAPI("user", "pw", session=session)
+        seen = {}
+
+        def handler(url, kw):
+            seen["data"] = kw["data"]
+            seen["headers"] = kw["headers"]
+            return FakeResponse(200, TOKEN_OK)
+
+        session = FakeSession(handler)
+        api = DreameAPI("user", "pw", country="IL", session=session)
         run(api.login())
         assert api.access_token == "token-1"
         assert api.uid == "UID1"
+        assert seen["data"]["country"] == "IL"
+        assert seen["headers"]["dreame-rlc"] == _compute_rlc("eu", "IL")
 
     def test_login_rejected_raises_auth_error(self):
         session = FakeSession(
