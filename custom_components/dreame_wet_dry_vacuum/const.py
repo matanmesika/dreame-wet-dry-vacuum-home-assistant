@@ -288,5 +288,13 @@ CONF_DEVICE_ID = "device_id"
 
 REGIONS = {
     "eu": "Europe",
-    "cn": "China / Asia",
+    "de": "Germany / Europe",
+    "cn": "China",
+    "us": "United States",
+    "ru": "Russia",
+    "tw": "Taiwan",
+    "sg": "Singapore / Southeast Asia",
+    "in": "India",
+    "i2": "International",
+    "kr": "South Korea",
 }
