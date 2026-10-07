@@ -94,12 +94,46 @@ def _setup_h15_sensors(
 
     coordinator.new_prop_callback = _add_new
     _add_new(set(coordinator.props))
+    async_add_entities([DreameH15MappingChangesSensor(coordinator)])
 
     _LOGGER.info(
         "Created %d H15 Pro Heat property sensors for model=%s",
         len(added),
         coordinator.model,
     )
+
+
+class DreameH15MappingChangesSensor(
+    CoordinatorEntity[DreameWetDryCoordinator], SensorEntity
+):
+    """Show the result of the last explicit H15 mapping snapshot comparison."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Mapping changes"
+    _attr_icon = "mdi:compare"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: DreameWetDryCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_h15_mapping_changes"
+        self._attr_device_info = build_device_info(coordinator)
+
+    @property
+    def native_value(self) -> int:
+        return len(self.coordinator.h15_last_changes)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        changes = self.coordinator.h15_last_changes
+        attrs: dict[str, Any] = {
+            "model": self.coordinator.model,
+            "changed_properties": list(changes),
+            "changes": changes,
+        }
+        if self.coordinator.h15_last_scan is not None:
+            attrs["last_scan"] = self.coordinator.h15_last_scan.isoformat()
+        return attrs
 
 
 class DreameH15PropertySensor(
