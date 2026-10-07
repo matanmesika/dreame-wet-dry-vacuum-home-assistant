@@ -27,7 +27,15 @@ _LOGGER = logging.getLogger(__name__)
 
 REGION_URLS = {
     "eu": EU_BASE_URL,
+    "de": "https://de.iot.dreame.tech:13267",
     "cn": CN_BASE_URL,
+    "us": "https://us.iot.dreame.tech:13267",
+    "ru": "https://ru.iot.dreame.tech:13267",
+    "tw": "https://tw.iot.dreame.tech:13267",
+    "sg": "https://sg.iot.dreame.tech:13267",
+    "in": "https://in.iot.dreame.tech:13267",
+    "i2": "https://i2.iot.dreame.tech:13267",
+    "kr": "https://kr.iot.dreame.tech:13267",
 }
 
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
@@ -93,7 +101,9 @@ class DreameAPI:
         self._password = password
         self._region = region
         self._country = country.upper()
-        self._base_url = REGION_URLS.get(region, EU_BASE_URL)
+        if region not in REGION_URLS:
+            raise ValueError(f"Unsupported Dreame cloud region: {region}")
+        self._base_url = REGION_URLS[region]
         self._access_token: str | None = None
         self._uid: str | None = None
         self._session = session
