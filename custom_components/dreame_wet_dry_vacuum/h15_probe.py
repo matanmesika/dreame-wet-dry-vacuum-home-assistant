@@ -13,7 +13,7 @@ import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DreameAPIError
-from .profiles import H15_PRO_HEAT_MODEL
+from .profiles import H15_PRO_HEAT_MODEL, H15_TARGETED_KEYS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -310,6 +310,13 @@ async def async_export_h15_app_probe(coordinator) -> dict[str, Any]:
     api = coordinator.api
     did = coordinator.device_id
 
+    # Refresh the expanded read-only H15 profile first so the exported
+    # properties represent the newest cache/live values available.
+    try:
+        await coordinator.async_refresh_h15_mapping()
+    except Exception as err:
+        _LOGGER.debug("H15 pre-export refresh failed (non-fatal): %s", err)
+
     probe: dict[str, Any] = {
         "model": model,
         "properties": {
@@ -330,6 +337,20 @@ async def async_export_h15_app_probe(coordinator) -> dict[str, Any]:
     await capture("dev_otc_info", api.get_dev_otc_info(did))
     await capture("device_data", api.get_device_data_probe(did))
     await capture("app_plugin", api.get_app_plugin_info(model))
+
+    # Export the exact app-derived keys through both available read paths.
+    targeted_key_strings = [f"{siid}.{piid}" for siid, piid in H15_TARGETED_KEYS]
+    await capture(
+        "targeted_status_props",
+        api.get_status_props(did, targeted_key_strings),
+    )
+    await capture(
+        "targeted_live_props",
+        api.get_properties(
+            did,
+            [{"siid": siid, "piid": piid} for siid, piid in H15_TARGETED_KEYS],
+        ),
+    )
 
     output_dir = Path(coordinator.hass.config.path("dreame_h15_probe"))
     await coordinator.hass.async_add_executor_job(
