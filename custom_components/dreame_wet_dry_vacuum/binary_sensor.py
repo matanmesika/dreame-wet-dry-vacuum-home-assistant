@@ -11,7 +11,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DreameWetDryConfigEntry
-from .const import ALERT_BINARY_SENSORS, KNOWN_BINARY_PROPS
+from .const import ALERT_BINARY_SENSORS, H15_ALERT_BINARY_SENSORS, KNOWN_BINARY_PROPS
 from .coordinator import DreameWetDryCoordinator
 from .entity import build_device_info
 
@@ -30,10 +30,9 @@ async def async_setup_entry(
     coordinator: DreameWetDryCoordinator = entry.runtime_data
 
     if coordinator.is_h15_pro_heat:
-        # Only the cloud connectivity state is model-independent. H14 alert
-        # bitmasks and charging/status semantics are not exposed on H15 until
-        # they are independently validated.
-        async_add_entities([DreameWetDryOnlineSensor(coordinator)])
+        # Use the H15 app warning table; keep legacy H14 masks separate.
+        async_add_entities([DreameWetDryOnlineSensor(coordinator), DreameWetDryChargingSensor(coordinator),
+                            *(DreameWetDryMappedAlert(coordinator, meta) for meta in H15_ALERT_BINARY_SENSORS)])
         return
 
     entities = [
@@ -150,4 +149,42 @@ class DreameWetDryChargingSensor(_BaseBinary):
 
     @property
     def is_on(self) -> bool:
+        if self.coordinator.is_h15_pro_heat:
+            state = self.coordinator.data.get("1.28")
+            try:
+                return int(state) in {4, 15} if state is not None else None
+            except (TypeError, ValueError):
+                return None
         return self.coordinator.data.get("status_group") == "charging"
+
+
+class DreameWetDryMappedAlert(CoordinatorEntity, BinarySensorEntity):
+    """An exact model-specific field match, including multi-bit fault codes."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_icon = "mdi:alert-circle-outline"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator, meta: dict) -> None:
+        super().__init__(coordinator)
+        self._meta = meta
+        self._attr_unique_id = f"{coordinator.device_id}_{meta['key']}"
+        self._attr_name = meta["name"]
+        self._attr_device_info = build_device_info(coordinator)
+
+    @property
+    def is_on(self) -> bool | None:
+        raw = self.coordinator.data.get(self._meta["data_key"])
+        try:
+            value = int(raw)
+            if isinstance(raw, bool) or value < 0 or value != float(raw):
+                return None
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return ((value >> self._meta["shift"]) & self._meta["field_mask"]) in self._meta["field_values"]
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {"property": self._meta["data_key"], "raw_value": self.coordinator.data.get(self._meta["data_key"]),
+                "mapping_status": self._meta.get("confidence", "plugin"), "mapping_source": "Dreamehome H15 warning table"}

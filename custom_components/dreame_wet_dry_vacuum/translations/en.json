@@ -199,6 +199,9 @@
       },
       "volume": {
         "name": "Voice volume"
+      },
+      "h15_volume": {
+        "name": "Voice volume (0: Silent, 1: Low, 2: High)"
       }
     },
     "select": {

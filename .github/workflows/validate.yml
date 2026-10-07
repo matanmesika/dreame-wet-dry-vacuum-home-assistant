@@ -3,8 +3,16 @@ name: Validate
 on:
   push:
   pull_request:
+  workflow_dispatch:
   schedule:
     - cron: "0 0 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   hacs:
@@ -31,27 +39,47 @@ jobs:
       - uses: astral-sh/ruff-action@v3
 
   tests:
-    name: Unit tests
+    name: Unit tests (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
       - name: Install test dependencies
         run: pip install pytest aiohttp pycryptodome "paho-mqtt>=2.0"
-      - name: Run tests
-        run: pytest -q
+      - name: Check component syntax
+        run: python -m compileall -q custom_components
+      - name: Run mapping, controls and regression tests
+        run: pytest -q --junitxml=test-results.xml
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-python-${{ matrix.python }}
+          path: test-results.xml
+          if-no-files-found: warn
+          retention-days: 14
 
   package:
-    name: H15 test bundle
+    name: Validated work-in-progress test bundle
+    needs: [hacs, hassfest, lint, tests]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Upload integration folder
+      - name: Package tracked integration and validation files
+        run: >-
+          git archive --format=zip --output=dreame-wet-dry-vacuum-review.zip
+          HEAD custom_components/dreame_wet_dry_vacuum README.md H15_MAPPING.md
+          INSTALL_HE.md LICENSE tests pyproject.toml
+      - name: Upload review bundle (not a release)
         uses: actions/upload-artifact@v4
         with:
-          name: dreame-wet-dry-vacuum-h15-test
-          path: custom_components/dreame_wet_dry_vacuum
+          name: dreame-wet-dry-vacuum-review-${{ github.sha }}
+          path: dreame-wet-dry-vacuum-review.zip
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14

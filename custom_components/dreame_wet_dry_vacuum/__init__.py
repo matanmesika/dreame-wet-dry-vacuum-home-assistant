@@ -11,9 +11,14 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DreameAPI, DreameAPIError, DreameAuthError
-from .const import CONF_COUNTRY, CONF_DEVICE_ID, CONF_REGION
+from .const import (
+    CONF_COUNTRY,
+    CONF_DEVICE_ID,
+    CONF_REGION,
+    H15_CONTROL_KEYS,
+    h15_sensor_is_optional,
+)
 from .coordinator import DreameWetDryCoordinator
-from .h15_settings import H15_CONTROL_KEYS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -123,6 +128,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: DreameWetDryConfigEntry)
         hass.config_entries.async_update_entry(
             entry, data={**entry.data, _H15_CONTROLS_SCHEMA_KEY: 1}
         )
+
+    # Upgrade previous control layouts without disabling diagnostics the user
+    # deliberately re-enabled after their first migration.
+    if coordinator.is_h15_pro_heat and entry.data.get(_H15_CONTROLS_SCHEMA_KEY, 0) < 2:
+        registry = er.async_get(hass)
+        mode_ids = {f"{coordinator.device_id}_h15_property_1_{piid}" for piid in (75, 81, 82, 83)}
+        for sensor_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+            if sensor_entry.domain == "sensor" and sensor_entry.unique_id in mode_ids and sensor_entry.disabled_by is None:
+                registry.async_update_entity(sensor_entry.entity_id, disabled_by=er.RegistryEntryDisabler.INTEGRATION)
+        hass.config_entries.async_update_entry(entry, data={**entry.data, _H15_CONTROLS_SCHEMA_KEY: 2})
+
+    # One-time presentation cleanup. Never delete entities or alter their IDs.
+    # Later user re-enabling of optional diagnostics is respected.
+    if coordinator.is_h15_pro_heat and not entry.data.get("_h15_layout_schema"):
+        registry = er.async_get(hass)
+        prefix = f"{coordinator.device_id}_h15_property_"
+        for sensor_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+            optional = sensor_entry.unique_id == f"{coordinator.device_id}_h15_mapping_changes"
+            if sensor_entry.unique_id.startswith(prefix):
+                parts = sensor_entry.unique_id[len(prefix):].split("_")
+                if len(parts) == 2 and all(part.isdigit() for part in parts):
+                    key = (int(parts[0]), int(parts[1]))
+                    optional = h15_sensor_is_optional(key) or coordinator.props.get(key) == -1
+            if sensor_entry.domain == "sensor" and optional and sensor_entry.disabled_by is None:
+                registry.async_update_entity(
+                    sensor_entry.entity_id, disabled_by=er.RegistryEntryDisabler.INTEGRATION
+                )
+        hass.config_entries.async_update_entry(entry, data={**entry.data, "_h15_layout_schema": 1})
 
     entry.runtime_data = coordinator
     coordinator.start_polling()

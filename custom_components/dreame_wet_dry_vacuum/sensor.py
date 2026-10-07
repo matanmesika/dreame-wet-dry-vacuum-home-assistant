@@ -21,14 +21,20 @@ from .const import (
     CONSUMABLE_SENSORS,
     DEVICE_STATUS,
     ERROR_DECODE,
+    H15_ERROR_FIELDS,
+    H15_GENERAL_SENSOR_KEYS,
+    H15_PROPERTY_META,
+    H15_SCHEDULE_DAYS,
+    H15_WARN_FIELDS,
     KNOWN_MQTT_PROPS,
     WARN_DECODE,
     decode_field_alerts,
+    decode_h15_alerts,
+    decode_schedule,
+    h15_sensor_is_optional,
 )
 from .coordinator import DreameWetDryCoordinator
 from .entity import build_device_info
-from .h15_settings import H15_CONTROL_KEYS
-from .profiles import H15_PROPERTY_META
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -115,7 +121,8 @@ def _setup_h15_sensors(
 
     coordinator.new_prop_callback = _add_new
     _add_new(set(coordinator.props))
-    async_add_entities([DreameH15MappingChangesSensor(coordinator)])
+    async_add_entities([DreameH15MappingChangesSensor(coordinator),
+                        *(DreameWetDryConsumableSensor(coordinator, meta) for meta in CONSUMABLE_SENSORS if meta["key"] != "back_brush" or coordinator.props.get((7, 7), -1) >= 0)])
 
     _LOGGER.info(
         "Created %d H15 Pro Heat property sensors for model=%s",
@@ -130,6 +137,7 @@ class DreameH15MappingChangesSensor(
     """Show the result of the last explicit H15 mapping snapshot comparison."""
 
     _attr_has_entity_name = True
+    _attr_entity_registry_enabled_default = False
     _attr_name = "Mapping changes"
     _attr_icon = "mdi:compare"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -186,13 +194,11 @@ class DreameH15PropertySensor(
         self._attr_icon = self._meta.get("icon", "mdi:code-tags")
         self._attr_device_info = build_device_info(coordinator)
 
-        if key in H15_CONTROL_KEYS:
-            # Keep raw values as optional diagnostics beside proper controls.
-            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_entity_category = (
+            None if key in H15_GENERAL_SENSOR_KEYS else EntityCategory.DIAGNOSTIC
+        )
+        if h15_sensor_is_optional(key) or coordinator.props.get(key) == -1:
             self._attr_entity_registry_enabled_default = False
-
-        if self._meta.get("diagnostic", True):
-            self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
         device_class = self._meta.get("device_class")
         if device_class == "battery":
@@ -200,6 +206,8 @@ class DreameH15PropertySensor(
             self._attr_state_class = SensorStateClass.MEASUREMENT
         elif device_class == "duration":
             self._attr_device_class = SensorDeviceClass.DURATION
+        elif device_class == "timestamp":
+            self._attr_device_class = SensorDeviceClass.TIMESTAMP
 
         state_class = self._meta.get("state_class")
         if state_class == "measurement":
@@ -216,10 +224,29 @@ class DreameH15PropertySensor(
         if raw is None:
             return None
 
+        if self._meta.get("timestamp"):
+            try:
+                return datetime.fromtimestamp(float(raw), UTC) if float(raw) > 0 else None
+            except (TypeError, ValueError, OverflowError, OSError):
+                return None
+        if self._meta.get("remaining_time") and raw in (-1, "-1"):
+            return None
+
         # Lists/dicts are valid raw Dreame values, but HA sensor state itself
         # must be scalar. Preserve the exact value in raw_value attributes.
         if isinstance(raw, (list, dict, tuple)):
             return json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+
+        if self._meta.get("decoder") in {"warnings", "errors"}:
+            fields = H15_WARN_FIELDS if self._key == (4, 1) else H15_ERROR_FIELDS
+            alerts = decode_h15_alerts(raw, fields)
+            return len(alerts) if alerts is not None else None
+        if self._meta.get("decoder") == "schedule":
+            try:
+                schedule = decode_schedule(int(raw))
+                return "Off" if not schedule["enabled"] else "Once" if schedule["once"] else ", ".join(H15_SCHEDULE_DAYS[day] for day in schedule["days"])
+            except (ValueError, TypeError):
+                return f"Unknown ({raw})"
 
         value_map = self._meta.get("value_map")
         if isinstance(value_map, dict):
@@ -248,6 +275,11 @@ class DreameH15PropertySensor(
             "mapping_status": self._meta.get("confidence", "unmapped"),
             "raw_value": raw,
         }
+
+        if self._meta.get("decoder") in {"warnings", "errors"}:
+            fields = H15_WARN_FIELDS if self._key == (4, 1) else H15_ERROR_FIELDS
+            attrs["active_alerts"] = decode_h15_alerts(raw, fields)
+            attrs["mapping_source"] = "Dreamehome warnVersion=2 (w2449e)"
 
         if note := self._meta.get("note"):
             attrs["mapping_note"] = note
@@ -387,7 +419,9 @@ class DreameWetDryConsumableSensor(
         super().__init__(coordinator)
         self._left_key = meta["left"]
         self._max_key = meta["max"]
-        self._full_life_min = meta["full_life_min"]
+        self._full_life_min = 0 if coordinator.is_h15_pro_heat else meta["full_life_min"]
+        if coordinator.is_h15_pro_heat:
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
         self._attr_unique_id = (
             f"{coordinator.device_id}_consumable_{meta['key']}"
         )
@@ -397,7 +431,8 @@ class DreameWetDryConsumableSensor(
 
     def _left_minutes(self) -> int | None:
         try:
-            return int(self.coordinator.data.get(self._left_key))
+            value = int(self.coordinator.data.get(self._left_key))
+            return None if self.coordinator.is_h15_pro_heat and value < 0 else value
         except (ValueError, TypeError):
             return None
 
@@ -425,8 +460,10 @@ class DreameWetDryConsumableSensor(
         attrs: dict[str, Any] = {
             "minutes_remaining": left,
             "full_life_hours": round(full / 60, 1),
-            "full_life_source": "device" if from_device else "default (60 h)",
+            "full_life_source": "device" if from_device else "unknown" if self.coordinator.is_h15_pro_heat else "default (60 h)",
         }
+        if full <= 0 and self.coordinator.is_h15_pro_heat:
+            attrs.pop("full_life_hours")
         if full > 0:
             attrs["percent_remaining"] = max(
                 0, min(100, round(left / full * 100))

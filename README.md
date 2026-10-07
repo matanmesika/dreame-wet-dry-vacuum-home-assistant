@@ -95,7 +95,7 @@ The integration creates one device with all of its entities. State is updated in
 
 ### H15 Pro Heat validation profile
 
-The consolidated **0.2.2** test build is documented in [H15_MAPPING.md](H15_MAPPING.md). Manual installation and device validation steps in Hebrew are in [INSTALL_HE.md](INSTALL_HE.md). The diagnostic export includes version/time markers, the full mapping profile and scan differences.
+The consolidated **work-in-progress** test build is documented in [H15_MAPPING.md](H15_MAPPING.md). Manual installation and device validation steps in Hebrew are in [INSTALL_HE.md](INSTALL_HE.md). The diagnostic export includes version/time markers, the full mapping profile and scan differences.
 
 This branch contains an active validation profile for the **Dreame H15 Pro Heat**
 model `dreame.hold.w2449e`.
@@ -131,12 +131,31 @@ Two diagnostic buttons are available on H15:
   `/config/dreame_h15_probe/` for mapping analysis.
 
 Unverified H14 writable controls and H14 alert/charging decoding remain suppressed
-on H15. Version 0.2.2 adds nine selects, nine switches (including four independent
-lifting-arm modes), and a 0–100% voice-volume slider using H15 app-derived write
-plans. Coupled cleaning settings follow the app, and rejected writes raise an error
-without reporting success. Duplicate setting sensors become optional diagnostics.
-Physical device validation is still required; schedules and language-pack IDs remain
-read-only until their encodings are verified.
+on H15. Version work-in-progress uses the existing modules: mappings in `const.py`,
+shared entity support in `entity.py`, device calls and exports in `api.py`, and
+concrete entities in the existing platforms. No additional model-specific Python
+files are required. H14 tables and legacy controls retain their behavior.
+
+H15 controls include 17 selects, 17 switches and two numeric settings. These cover
+cleaning/suction/water/heat settings, self-cleaning and drying modes, traction,
+smart drying, detergent preferences, installed voice language, volume, and
+scheduled wash/dry time and weekdays. Volume follows the app's 0/30/60 levels;
+schedule time is entered in minutes after midnight with an HH:MM attribute.
+
+Buttons start/resume/stop self-cleaning, start/stop drying, and reset roller/filter
+life using actual device commands. An optional rear-brush reset is disabled when
+unsupported. Two-direction app control is available as bounded 0.3-second pulses
+only when the device reports horizontal and online, with an explicit stop on
+failure/cancellation. Six-direction robot control is unsupported by this model.
+
+The H15 app's warnVersion=2 tables provide 28 specific alert entities. Raw values
+remain available alongside decoded warnings/errors. Water-tank conditions are
+physical device telemetry, not manually reset counters. Consumable counters update
+only from device readback after a reset. Unknown values are retained for mapping.
+
+Unit tests pass; physical-device and full Home Assistant runtime validation are
+still required. This work-in-progress is a draft validation build; sensor mapping remains incomplete while awaiting Dreame engineering feedback. Firmware/account management and complete cleaning-history retrieval are
+outside this control build; unresolved telemetry remains diagnostic.
 
 Properties that still have no verified H15 meaning remain visible as raw
 diagnostics so they can be identified with controlled one-setting-at-a-time tests.
@@ -250,3 +269,11 @@ This project is provided "as is", without warranty of any kind. It uses an unoff
 ## License
 
 Released into the **public domain** under [The Unlicense](LICENSE). Do whatever you want with it — copy, modify, publish, sell, fork — no attribution required.
+
+### work-in-progress device layout and voice volume
+
+The H15 remains one device: **Controls** for operation and preferences, **Sensors** for general telemetry, **Diagnostic** for maintenance and alerts. These are native HA headings, not custom titles. Optional raw diagnostics are disabled once on upgrade and can be re-enabled. IDs and H14 mappings are preserved. Voice volume is a three-position slider: 0 Silent, 1 Low, 2 High, sending device values 0, 30, 60. **Sensor mapping remains incomplete.** This draft build awaits Dreame engineering feedback and further physical device validation; the device-page presentation also needs further refinement.
+
+### Work-in-progress CI and review bundles
+
+Pushes, pull requests and manual workflow dispatch run HACS, hassfest, Ruff, component compilation and the unit-test suite on Python 3.12 and 3.13. JUnit reports are retained for 14 days, including failed runs. Only after all validation jobs pass is a commit-specific review ZIP created, containing the integration, mapping/installation documentation and tests. This is a test artifact, not a GitHub Release; no version tag or release publication occurs. Physical device testing and official confirmation of incomplete H15 mappings remain necessary before release.

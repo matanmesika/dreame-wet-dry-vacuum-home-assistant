@@ -26,7 +26,7 @@ EXPECTED: dict[str, set[str]] = {
     | {m["key"] for m in KNOWN_BINARY_PROPS.values()}
     | {m["key"] for m in ALERT_BINARY_SENSORS},
     "switch": {m["key"] for m in KNOWN_SWITCH_PROPS.values()},
-    "number": {m["key"] for m in KNOWN_NUMBER_PROPS.values()},
+    "number": {m["key"] for m in KNOWN_NUMBER_PROPS.values()} | {"h15_volume"},
     "select": {m["key"] for m in KNOWN_SELECT_PROPS.values()},
     "button": {m["key"] for m in KNOWN_BUTTON_PROPS.values()},
 }

@@ -1,6 +1,6 @@
 """Tests for the H15 Pro Heat model profile."""
 
-from custom_components.dreame_wet_dry_vacuum.profiles import (
+from custom_components.dreame_wet_dry_vacuum.const import (
     H15_CLEANING_MODE_MAP,
     H15_HOT_WATER_MAP,
     H15_MOISTURE_SENSITIVITY_MAP,

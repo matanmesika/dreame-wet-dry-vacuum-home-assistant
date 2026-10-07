@@ -5,13 +5,14 @@ from homeassistant.components import persistent_notification
 from homeassistant.components.button import ButtonEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DreameWetDryConfigEntry
-from .const import KNOWN_BUTTON_PROPS
+from .api import DreameAPIError, async_export_h15_app_probe
+from .const import H15_BUTTON_COMMANDS, KNOWN_BUTTON_PROPS, build_h15_command_plan
 from .entity import DreameWetDryEntity, build_device_info
-from .h15_probe import async_export_h15_app_probe
 
 
 async def async_setup_entry(
@@ -22,10 +23,10 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
 
     if coordinator.is_h15_pro_heat:
-        # Safe diagnostic-only button: performs a read-only full property scan
-        # and compares it with the previous H15 mapping snapshot.
+        # App commands and read-only mapping tools share the existing platform.
         async_add_entities(
             [
+                *(DreameWetDryCommandButton(coordinator, command, meta) for command, meta in H15_BUTTON_COMMANDS.items()),
                 DreameH15RefreshMappingButton(coordinator),
                 DreameH15ExportAppMetadataButton(coordinator),
             ]
@@ -119,3 +120,39 @@ class DreameWetDryButton(DreameWetDryEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         await self._set(self._press_value)
+
+
+class DreameWetDryCommandButton(CoordinatorEntity, ButtonEntity):
+    """A model-specific operation, not a writable telemetry property."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, command: str, meta: dict) -> None:
+        super().__init__(coordinator)
+        self._command = command
+        self._attr_name = meta["name"]
+        self._attr_icon = meta["icon"]
+        self._attr_unique_id = f"{coordinator.device_id}_h15_command_{command}"
+        self._attr_device_info = build_device_info(coordinator)
+        if "reset" in meta:
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        if meta.get("optional"):
+            self._attr_entity_registry_enabled_default = False
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        if "move" in H15_BUTTON_COMMANDS[self._command] and (self.coordinator.snapshot or self.coordinator.device_info_raw).get("online") is not True:
+            return False
+        try:
+            build_h15_command_plan(self._command, self.coordinator.props)
+        except ValueError:
+            return False
+        return True
+
+    async def async_press(self) -> None:
+        try:
+            await self.coordinator.async_send_h15_command(self._command)
+        except (ValueError, DreameAPIError) as err:
+            raise HomeAssistantError(str(err)) from err

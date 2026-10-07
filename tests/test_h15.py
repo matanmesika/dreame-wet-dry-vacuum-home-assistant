@@ -10,10 +10,10 @@ from typing import ClassVar
 
 import pytest
 
-from custom_components.dreame_wet_dry_vacuum.const import KNOWN_SELECT_PROPS
-from custom_components.dreame_wet_dry_vacuum.profiles import (
+from custom_components.dreame_wet_dry_vacuum.const import (
     H15_PROPERTY_META,
     H15_TARGETED_KEYS,
+    KNOWN_SELECT_PROPS,
     is_h15_pro_heat,
 )
 
@@ -39,7 +39,7 @@ def probe(monkeypatch):
     adapter = types.ModuleType(name)
     adapter.async_get_clientsession = lambda hass: None
     monkeypatch.setitem(sys.modules, name, adapter)
-    module_name = "custom_components.dreame_wet_dry_vacuum.h15_probe"
+    module_name = "custom_components.dreame_wet_dry_vacuum.api"
     monkeypatch.delitem(sys.modules, module_name, raising=False)
     module = importlib.import_module(module_name)
     yield module
@@ -110,7 +110,7 @@ def test_h15_export_includes_profile_and_bounded_live_reads(probe, tmp_path):
     coordinator = FakeCoordinator()
     result = asyncio.run(probe.async_export_h15_app_probe(coordinator))
     shared = json.loads(Path(result["share_metadata"]).read_text())
-    assert shared["integration_version"] == "0.2.2"
+    assert shared["integration_version"] == json.loads(Path(probe.__file__).with_name("manifest.json").read_text())["version"]
     assert shared["exported_at"]
     assert shared["mapping_refresh"] == {"ok": True}
     assert shared["mapping_changes"]["16.7"] == {"old": 1, "new": 4}

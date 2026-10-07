@@ -17,6 +17,8 @@ from .api import DreameAPI, DreameAPIError, DreameAuthError
 from .const import (
     CONSUMABLE_MAX_KEYS,
     DOMAIN,
+    H15_BUTTON_COMMANDS,
+    H15_TARGETED_KEYS,
     KNOWN_BINARY_PROPS,
     KNOWN_MQTT_PROPS,
     KNOWN_NUMBER_PROPS,
@@ -24,10 +26,12 @@ from .const import (
     KNOWN_SWITCH_PROPS,
     MQTT_ONLY_KEYS,
     STATUS_GROUP,
+    build_h15_command_plan,
+    build_h15_write_plan,
+    build_schedule_day_plan,
+    is_h15_pro_heat,
 )
 from .dreame_mqtt import DreameMqttClient
-from .h15_settings import build_h15_write_plan
-from .profiles import H15_TARGETED_KEYS, is_h15_pro_heat
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -182,7 +186,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not self._is_h15:
             raise ValueError("H15 controls cannot write to this device model")
         async with self._h15_write_lock:
-            if arm_bit is not None:
+            if arm_bit is not None or key == (24, 1):
                 # Refresh the shared bitfield when live RPC is available.
                 # A sleeping device may return no value; never invent a default.
                 rows = await self.api.get_properties(
@@ -194,6 +198,10 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         and row.get("piid") == 1 and row.get("value") is not None
                     ):
                         self.props[(24, 1)] = row["value"]
+            if key in {(16, 1), (16, 2), (16, 7), (16, 8)}:
+                await self._async_read_control_properties({(16, 1), (16, 2), (16, 8)})
+            if key in {(1, 76), (1, 77)}:
+                await self._async_read_control_properties({(1, 76), (1, 77)})
             plan = build_h15_write_plan(key, value, self.props, arm_bit=arm_bit)
             ok = await self.api.set_h15_properties(self.device_id, plan)
             if not ok:
@@ -203,6 +211,68 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             new_keys = self._apply_h15_values({f"{s}.{p}": v for (s, p), v in plan.items()})
             if new_keys and self.new_prop_callback:
                 self.new_prop_callback(new_keys)
+            self.async_set_updated_data(self._build_data())
+
+    async def _async_read_control_properties(self, keys: set[tuple[int, int]]) -> None:
+        """Read targeted state without inventing command results or counters."""
+        rows = await self.api.get_properties(
+            self.device_id, [{"siid": siid, "piid": piid} for siid, piid in sorted(keys)]
+        )
+        values = {}
+        for row in rows:
+            if not isinstance(row, dict) or row.get("code") != 0:
+                continue
+            key = (row.get("siid"), row.get("piid"))
+            if key in keys and row.get("value") is not None:
+                values[f"{key[0]}.{key[1]}"] = row["value"]
+        new_keys = self._apply_h15_values(values)
+        if new_keys and self.new_prop_callback:
+            self.new_prop_callback(new_keys)
+
+    async def async_set_h15_schedule_day(self, day: int, enabled: bool) -> None:
+        if not self._is_h15:
+            raise ValueError("H15 schedules cannot write to this model")
+        async with self._h15_write_lock:
+            await self._async_read_control_properties({(1, 76), (1, 77)})
+            plan = build_schedule_day_plan(day, enabled, self.props)
+            if not await self.api.set_h15_properties(self.device_id, plan):
+                raise HomeAssistantError("Dreame did not confirm the schedule change")
+            self._apply_h15_values({f"{siid}.{piid}": value for (siid, piid), value in plan.items()})
+            self.async_set_updated_data(self._build_data())
+
+    async def async_send_h15_command(self, command: str) -> None:
+        """Send an app command and then read device state, never fake a reset."""
+        if not self._is_h15 or command not in H15_BUTTON_COMMANDS:
+            raise ValueError("Unsupported command for this model")
+        meta = H15_BUTTON_COMMANDS[command]
+        keys = ({(10, 1)} if "move" in meta else {meta["remaining"], meta["maximum"]} if "reset" in meta
+                else {(1, 28), (1, 8), (1, 10), (3, 1), (4, 1), (4, 2)})
+        async with self._h15_write_lock:
+            await self._async_read_control_properties(keys)
+            if "move" in meta and (self.snapshot or self.device_info_raw).get("online") is not True:
+                raise HomeAssistantError("Movement requires an online device")
+            plan = build_h15_command_plan(command, self.props)
+            if "move" in meta:
+                try:
+                    if not await self.api.set_h15_properties(self.device_id, plan):
+                        raise HomeAssistantError("Dreame rejected the movement command")
+                    await asyncio.sleep(0.3)
+                finally:
+                    # Finish the stop RPC even if the button task was cancelled.
+                    stop_task = asyncio.create_task(self.api.set_h15_properties(self.device_id, {meta["move"]: 0}))
+                    try:
+                        stopped = await asyncio.shield(stop_task)
+                    except asyncio.CancelledError:
+                        await stop_task
+                        raise
+                    if not stopped:
+                        raise HomeAssistantError("Dreame did not acknowledge stopping movement")
+            elif not await self.api.set_h15_properties(self.device_id, plan):
+                raise HomeAssistantError("Dreame rejected the command; refresh the device and retry")
+            try:
+                await self._async_read_control_properties(keys)
+            except DreameAPIError as err:
+                _LOGGER.debug("Command accepted, awaiting telemetry: %s", err)
             self.async_set_updated_data(self._build_data())
 
     def _handle_mqtt_update(self, state: dict[tuple[int, int], Any]) -> None:

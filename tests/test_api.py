@@ -157,7 +157,7 @@ class TestLogin:
 
 class TestAuthedRequests:
     @pytest.mark.parametrize("body", [
-        {}, {"data": None}, {"data": {"result": []}},
+        {}, {"data": None}, {"data": {"result": [{"code": 0, "value": -1}, {"code": 0}]}}, {"data": {"result": []}},
         {"data": {"result": [{"code": -1}, {"code": 0}]}},
         {"data": {"result": [{"siid": 24, "piid": 1, "code": 0}] * 2}},
     ])

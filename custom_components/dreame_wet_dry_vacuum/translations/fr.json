@@ -199,6 +199,9 @@
       },
       "volume": {
         "name": "Volume vocal"
+      },
+      "h15_volume": {
+        "name": "Volume vocal (0 : silencieux, 1 : faible, 2 : élevé)"
       }
     },
     "select": {
