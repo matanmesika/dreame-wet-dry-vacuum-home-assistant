@@ -9,13 +9,16 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DreameAPI, DreameAuthError, DreameAPIError
-from .const import CONF_DEVICE_ID, CONF_REGION, DOMAIN, REGIONS
+from .const import CONF_COUNTRY, CONF_DEVICE_ID, CONF_REGION, DOMAIN, REGIONS
 
 STEP_USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
         vol.Required(CONF_REGION, default="eu"): vol.In(REGIONS),
+        vol.Required(CONF_COUNTRY, default="IL"): vol.All(
+            str, vol.Length(min=2, max=2)
+        ),
     }
 )
 
@@ -41,11 +44,18 @@ class DreameWetDryConfigFlow(ConfigFlow, domain=DOMAIN):
         self._username: str = ""
         self._password: str = ""
         self._region: str = "eu"
+        self._country: str = "IL"
         self._devices: list[dict[str, Any]] = []
 
-    def _api(self, username: str, password: str, region: str) -> DreameAPI:
+    def _api(
+        self, username: str, password: str, region: str, country: str
+    ) -> DreameAPI:
         return DreameAPI(
-            username, password, region, session=async_get_clientsession(self.hass)
+            username,
+            password,
+            region,
+            country=country,
+            session=async_get_clientsession(self.hass),
         )
 
     async def async_step_user(self, user_input=None) -> ConfigFlowResult:
@@ -55,8 +65,11 @@ class DreameWetDryConfigFlow(ConfigFlow, domain=DOMAIN):
             self._username = user_input[CONF_USERNAME]
             self._password = user_input[CONF_PASSWORD]
             self._region = user_input[CONF_REGION]
+            self._country = user_input[CONF_COUNTRY].upper()
 
-            api = self._api(self._username, self._password, self._region)
+            api = self._api(
+                self._username, self._password, self._region, self._country
+            )
             try:
                 await api.login()
                 self._devices = await api.get_devices()
@@ -113,6 +126,7 @@ class DreameWetDryConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_USERNAME: self._username,
                 CONF_PASSWORD: self._password,
                 CONF_REGION: self._region,
+                CONF_COUNTRY: self._country,
                 CONF_DEVICE_ID: device_id,
                 "device_model": device.get("model", ""),
                 "device_name": name,
@@ -132,6 +146,7 @@ class DreameWetDryConfigFlow(ConfigFlow, domain=DOMAIN):
                 entry.data[CONF_USERNAME],
                 user_input[CONF_PASSWORD],
                 entry.data.get(CONF_REGION, "eu"),
+                entry.data.get(CONF_COUNTRY, "DE"),
             )
             try:
                 await api.login()
