@@ -106,6 +106,25 @@ class TestLogin:
         assert seen["data"]["country"] == "IL"
         assert seen["headers"]["dreame-rlc"] == _compute_rlc("eu", "IL")
 
+    def test_auto_region_uses_country_bootstrap(self):
+        seen = {}
+
+        def handler(url, kw):
+            seen["url"] = url
+            return FakeResponse(200, TOKEN_OK)
+
+        api = DreameAPI("user", "pw", region="auto", country="US", session=FakeSession(handler))
+        run(api.login())
+        assert seen["url"].startswith("https://us.iot.dreame.tech:13267/")
+
+    def test_login_response_region_switches_auto_backend(self):
+        token = {**TOKEN_OK, "region": "i2"}
+        session = FakeSession(lambda url, kw: FakeResponse(200, token))
+        api = DreameAPI("user", "pw", region="auto", country="IL", session=session)
+        run(api.login())
+        assert api._region == "i2"
+        assert api._base_url == "https://i2.iot.dreame.tech:13267"
+
     def test_region_selects_matching_cloud_host(self):
         seen = {}
 
