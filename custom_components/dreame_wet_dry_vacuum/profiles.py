@@ -88,22 +88,54 @@ H15_MOISTURE_SENSITIVITY_MAP = {
     4: "High",
 }
 
+H15_SELF_CLEAN_MODE_MAP = {
+    2: "Standard Immersive Self-Cleaning",
+    3: "Deep-Clean Immersive Self-Cleaning",
+    4: "Smart Self-Cleaning",
+    5: "Hot-Water Self-Cleaning",
+}
+
+H15_DRY_MODE_MAP = {
+    1: "High-Speed",
+    3: "Super-Speed",
+}
+
+H15_DETERGENT_MODE_MAP = {
+    2: "Smart Mode",
+    3: "Powerful stain removal",
+}
+
 # Known app-facing properties worth probing explicitly even when the broad
 # iotstatus cache omits them. This is read-only.
 H15_TARGETED_KEYS: tuple[tuple[int, int], ...] = (
+    # SIID 1: all properties defined by Dreame's Vacuum model plus the
+    # additional w2449e values already observed from cloud/MQTT.
     (1, 1), (1, 2), (1, 3), (1, 4), (1, 6), (1, 7), (1, 8), (1, 9),
     (1, 10), (1, 11), (1, 12), (1, 13), (1, 14), (1, 17),
     (1, 28), (1, 29), (1, 30),
-    (1, 53), (1, 54), (1, 55), (1, 56), (1, 57), (1, 67),
+    (1, 33), (1, 34), (1, 35), (1, 36), (1, 47),
+    (1, 49), (1, 50), (1, 51), (1, 52),
+    (1, 53), (1, 54), (1, 55), (1, 56), (1, 57),
+    (1, 64), (1, 65), (1, 66), (1, 67), (1, 68), (1, 69),
+    (1, 70), (1, 71), (1, 72), (1, 73),
     (1, 75), (1, 76), (1, 77), (1, 81), (1, 82), (1, 83),
-    (3, 1),
+
+    # Standard/status and warning services.
+    (2, 1), (3, 1),
     (4, 1), (4, 2), (4, 3), (4, 5), (4, 6), (4, 7), (4, 38),
-    (6, 7), (7, 7), (10, 1),
-    (16, 1), (16, 2), (16, 6), (16, 7), (16, 8),
+
+    # Consumables / model services defined by the downloaded Dreame plugin.
+    (6, 6), (6, 7), (7, 6), (7, 7), (10, 1), (13, 2),
+    (16, 1), (16, 2), (16, 3), (16, 4), (16, 6), (16, 7), (16, 8),
     (17, 1), (17, 8),
-    (19, 3),
+    (19, 2), (19, 3),
+    (20, 2), (20, 3), (21, 6), (21, 7), (22, 6), (22, 7),
     (23, 1), (24, 1), (25, 1),
     (26, 1), (26, 2), (26, 3), (26, 4), (26, 5),
+
+    # The common plugin also defines a DeviceControl service. The H15 resource
+    # disables normal remote control, so these are diagnostic read probes only.
+    (100, 1), (100, 2), (100, 3), (100, 4), (100, 5), (100, 6),
 )
 
 H15_PROPERTY_META: dict[tuple[int, int], dict[str, Any]] = {
@@ -120,7 +152,8 @@ H15_PROPERTY_META: dict[tuple[int, int], dict[str, Any]] = {
         "confidence": "plugin",
         "icon": "mdi:waves-arrow-up",
         "diagnostic": False,
-        "note": "Dreame plugin property PropSelfCleanWaterMode. Exact H15 enum values will be learned from live reads.",
+        "value_map": H15_SELF_CLEAN_MODE_MAP,
+        "note": "Dreame PropSelfCleanWaterMode. Plugin maps 2=Standard Immersive, 3=Deep-Clean Immersive, 4=Smart; 5 is the hot-water self-clean mode.",
     },
     (1, 9): {
         "name": "Auto roller brush drying",
@@ -128,15 +161,15 @@ H15_PROPERTY_META: dict[tuple[int, int], dict[str, Any]] = {
         "icon": "mdi:hair-dryer",
         "diagnostic": False,
         "value_map": {0: "On", 1: "Off"},
-        "note": "Dreame plugin property PropAutoDrySwitch. Inverted boolean is used by this plugin family; awaiting direct H15 read.",
+        "note": "Dreame PropAutoDrySwitch. App code explicitly treats raw 0 as enabled and writes 0 for On / 1 for Off.",
     },
     (1, 10): {
         "name": "Drying mode",
         "confidence": "confirmed",
         "icon": "mdi:weather-sunny",
         "diagnostic": False,
-        "value_map": {1: "High-Speed"},
-        "note": "Dreame plugin property PropAutoDryMode. H15 UI verified raw 1 with High-Speed selected; other values remain raw until observed.",
+        "value_map": H15_DRY_MODE_MAP,
+        "note": "Dreame PropAutoDryMode. w2449e UI/code maps 1=High-Speed and 3=Super-Speed.",
     },
     (1, 11): {
         "name": "Timed drying after cleaning",
@@ -260,11 +293,12 @@ H15_PROPERTY_META: dict[tuple[int, int], dict[str, Any]] = {
         "note": "The Dreame CleanLog code reads PIID 64-66 in order for mild/moderate/severe dirt duration. Unit still needs confirmation.",
     },
     (1, 67): {
-        "name": "Detergent preference",
+        "name": "Cleaning solution ratio mode",
         "confidence": "plugin",
         "icon": "mdi:bottle-tonic-plus-outline",
-        "diagnostic": True,
-        "note": "Dreame plugin property PropDetergentFav.",
+        "diagnostic": False,
+        "value_map": H15_DETERGENT_MODE_MAP,
+        "note": "Dreame PropDetergentFav. w2449e has allowSterilize=false, so raw 2=Smart Mode and raw 3=Powerful stain removal.",
     },
     (1, 75): {
         "name": "Scheduled wash & dry mode",
@@ -442,6 +476,35 @@ H15_PROPERTY_META: dict[tuple[int, int], dict[str, Any]] = {
         "value_map": H15_HOT_WATER_MAP,
         "note": "Dreame PropCustomHotWaterMode. H15 UI: Off/Mild/Standard/Thermal.",
     },
+    (13, 2): {
+        "name": "Electrolyzed water setting raw",
+        "confidence": "plugin",
+        "icon": "mdi:flash-outline",
+        "diagnostic": True,
+        "note": "Dreame ElectrolyzedWater/PropElectrolyzedWaterSwitch. w2449e resource disables this setting in the UI.",
+    },
+    (16, 3): {
+        "name": "Electrolyzed water raw",
+        "confidence": "plugin",
+        "icon": "mdi:flash-outline",
+        "diagnostic": True,
+        "note": "Dreame VacuumExtend/PropElecWater. w2449e does not expose the electrolyzed-water setting in its UI.",
+    },
+    (16, 4): {
+        "name": "Brush speed raw",
+        "confidence": "plugin",
+        "icon": "mdi:rotate-right",
+        "diagnostic": True,
+        "note": "Dreame VacuumExtend/PropBrushSpeed. Not shown in the current H15 UI.",
+    },
+    (19, 2): {
+        "name": "Filter maximum life raw",
+        "confidence": "plugin",
+        "icon": "mdi:air-filter",
+        "unit": "min",
+        "diagnostic": True,
+        "note": "Dreame Filter/PropFilterMaxHeal.",
+    },
     (19, 3): {
         "name": "Filter remaining",
         "confidence": "confirmed",
@@ -455,19 +518,19 @@ H15_PROPERTY_META: dict[tuple[int, int], dict[str, Any]] = {
     },
     (23, 1): {
         "name": "GlideWheel traction",
-        "confidence": "candidate",
+        "confidence": "plugin",
         "icon": "mdi:car-traction-control",
         "diagnostic": False,
         "value_map": H15_TRACTION_MAP,
-        "note": "Dreame Wheel/PropPowerWheel. H15 UI options are Gentle/Balanced/Turbo; direct H15 read still required.",
+        "note": "Dreame Wheel/PropPowerWheel. App code maps raw 1=Gentle, 0=Balanced, 2=Turbo.",
     },
     (24, 1): {
         "name": "Lifting robotic arm modes raw",
-        "confidence": "candidate",
+        "confidence": "plugin",
         "icon": "mdi:robot-industrial-outline",
         "diagnostic": False,
-        "bitfield": True,
-        "note": "Dreame MechanicalArm/PropMechanicalArmSwitch. w2449e resource enables mechanicalArm; exact bit layout will be learned from live reads.",
+        "decoder": "mechanical_arm_2449",
+        "note": "Dreame MechanicalArm/PropMechanicalArmSwitch. w2449e uses inverted bits: bit0 Smart, bit3 Hot Water, bit2 Suction, bit4 Custom; 0 means selected. Bit1 is unused by the w2449e UI.",
     },
     (25, 1): {
         "name": "Global hot water mode raw",
@@ -478,27 +541,27 @@ H15_PROPERTY_META: dict[tuple[int, int], dict[str, Any]] = {
     },
     (26, 1): {
         "name": "Smart drying",
-        "confidence": "candidate",
+        "confidence": "plugin",
         "icon": "mdi:weather-sunny-alert",
         "diagnostic": False,
         "value_map": {0: "On", 1: "Off"},
-        "note": "H15 Advanced Settings UI feature. Exact PIID/polarity will be verified by the expanded scan.",
+        "note": "Dreame Smart/PropSmartDrySwitch at 26.1. App code treats raw 0 as Smart Drying enabled.",
     },
     (26, 2): {
         "name": "Smart moisture protection",
-        "confidence": "candidate",
+        "confidence": "plugin",
         "icon": "mdi:water-sync",
         "diagnostic": False,
         "value_map": {0: "On", 1: "Off"},
-        "note": "H15 Advanced Settings UI feature. Exact PIID/polarity will be verified by the expanded scan.",
+        "note": "Dreame Smart/PropSmartReDrySwitch at 26.2. App code treats raw 0 as Smart Moisture Protection enabled.",
     },
     (26, 3): {
         "name": "Roller brush moisture sensitivity",
-        "confidence": "candidate",
+        "confidence": "plugin",
         "icon": "mdi:water-percent",
         "diagnostic": False,
         "value_map": H15_MOISTURE_SENSITIVITY_MAP,
-        "note": "H15 UI options Low/Medium/High. Exact PIID/value mapping will be confirmed by the expanded scan.",
+        "note": "Dreame Smart/PropSmartDryRate at 26.3. App slider writes raw 2=Low, 3=Medium, 4=High.",
     },
     (26, 4): {
         "name": "Raw 26.4",
