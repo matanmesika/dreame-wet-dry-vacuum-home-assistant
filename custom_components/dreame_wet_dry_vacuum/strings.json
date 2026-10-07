@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Dreame Wet & Dry Vacuum",
-        "description": "Connect your Dreame wet & dry vacuum using your Dreame Home credentials. Automatic server discovery is recommended; the country code is separate from the cloud server.",
+        "description": "Connect using your Dreame Home credentials. The country is taken automatically from Home Assistant; select it only if it is not configured in the system. Automatic cloud server discovery is recommended.",
         "data": {
           "username": "Email",
           "password": "Password",

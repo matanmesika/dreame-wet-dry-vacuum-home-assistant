@@ -137,6 +137,7 @@ class DreameAPI:
         self._session = session
         self._owns_session = session is None
         self._rlc = _compute_rlc(self._region, self._country)
+        self._region_discovery_done = region != "auto"
 
     def _set_region(self, region: str) -> None:
         """Switch to a known Dreame cloud backend without re-authenticating."""
@@ -145,6 +146,7 @@ class DreameAPI:
         self._region = region
         self._base_url = REGION_URLS[region]
         self._rlc = _compute_rlc(region, self._country)
+        self._region_discovery_done = True
 
     def _set_domain(self, domain: str) -> None:
         """Use a Dreame-provided API domain when it is safe to trust."""
@@ -154,6 +156,7 @@ class DreameAPI:
             _LOGGER.warning("Ignoring unexpected Dreame login domain: %s", domain)
             return
         self._base_url = f"https://{host}:13267"
+        self._region_discovery_done = True
         prefix = host.split(".", 1)[0]
         if prefix in REGION_URLS:
             self._region = prefix
@@ -419,11 +422,20 @@ class DreameAPI:
 
     async def get_devices(self) -> list[dict[str, Any]]:
         """Return devices and auto-detect the correct cloud backend when requested."""
+        # Login may redirect the account to its authoritative region/domain.
+        # Resolve that before constructing the device-list URL.
+        await self._ensure_logged_in()
         records = await self._get_devices_from_url(
             self._base_url, relogin_on_401=True
         )
 
-        if not records and self._requested_region == "auto":
+        if records:
+            self._region_discovery_done = True
+        if not records and self._requested_region == "auto" and not self._region_discovery_done:
+            # A missing/offline device must not restart a full backend search
+            # every time the periodic snapshot is refreshed. One bounded scan
+            # per client is enough; a reload permits a deliberate fresh attempt.
+            self._region_discovery_done = True
             tried = {self._region}
             for region in AUTO_REGION_ORDER:
                 if region in tried:

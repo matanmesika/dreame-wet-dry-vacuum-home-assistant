@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Aspirateur laveur Dreame",
-        "description": "Connectez votre aspirateur laveur Dreame avec vos identifiants Dreame Home. La détection automatique du serveur est recommandée ; le code pays est distinct du serveur cloud.",
+        "description": "Connectez-vous avec vos identifiants Dreame Home. Le pays est repris automatiquement de Home Assistant ; sélectionnez-le uniquement s'il n'est pas configuré dans le système. La détection automatique du serveur cloud est recommandée.",
         "data": {
           "username": "Adresse e-mail",
           "password": "Mot de passe",

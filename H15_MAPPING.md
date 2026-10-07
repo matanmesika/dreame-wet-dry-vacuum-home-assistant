@@ -140,7 +140,7 @@ Writable mode properties 1.8, 1.10, 1.67, 1.75, 1.81, 1.82, 1.83, 16.7, 16.8, 25
 
 The app synchronizes wash and dry preferences across manual, return and scheduled settings, so changing a return/scheduled mode also updates its sibling preferences. This is documented behavior, not independent schedule toggling. Reported Work state (1.28) is telemetry; high-level property 1.6 controls location altitude and is hidden by w2449e, not an extra cleaning mode.
 
-163 unit tests pass, including H14 table preservation and exact capture 4.2=4096 / 4.6=81. Commands still require physical user validation. This remains a draft validation build, not a complete or fully validated sensor mapping.
+174 unit tests pass, including H14 table preservation and exact capture 4.2=4096 / 4.6=81. Setup uses Home Assistant's country automatically when configured; existing account settings are preserved. Login-provided region/domain is honored before device listing, and fallback discovery is bounded to one scan per client without repeated password logins. Commands still require physical user validation. This remains a draft validation build, not a complete or fully validated sensor mapping.
 
 ## Native device presentation (work in progress)
 

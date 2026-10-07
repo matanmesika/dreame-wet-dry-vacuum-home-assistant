@@ -14,20 +14,15 @@ from .const import CONF_COUNTRY, CONF_DEVICE_ID, CONF_REGION, DOMAIN, REGIONS
 
 
 def _user_schema(default_country: str | None) -> vol.Schema:
-    """Build setup schema using Home Assistant's configured country when available."""
-    country_key = (
-        vol.Required(CONF_COUNTRY, default=default_country)
-        if default_country
-        else vol.Required(CONF_COUNTRY)
-    )
-    return vol.Schema(
-        {
-            vol.Required(CONF_USERNAME): str,
-            vol.Required(CONF_PASSWORD): str,
-            vol.Required(CONF_REGION, default="auto"): vol.In(REGIONS),
-            country_key: CountrySelector(),
-        }
-    )
+    """Use HA's country silently; ask only when the system has no country."""
+    fields = {
+        vol.Required(CONF_USERNAME): str,
+        vol.Required(CONF_PASSWORD): str,
+        vol.Required(CONF_REGION, default="auto"): vol.In(REGIONS),
+    }
+    if not default_country:
+        fields[vol.Required(CONF_COUNTRY)] = CountrySelector()
+    return vol.Schema(fields)
 
 STEP_REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_PASSWORD): str})
 
@@ -67,12 +62,15 @@ class DreameWetDryConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input=None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
+        country = (self.hass.config.country or "").upper()
+        if len(country) != 2:
+            country = ""
 
         if user_input is not None:
             self._username = user_input[CONF_USERNAME]
             self._password = user_input[CONF_PASSWORD]
             self._region = user_input[CONF_REGION]
-            self._country = user_input[CONF_COUNTRY].upper()
+            self._country = (user_input.get(CONF_COUNTRY) or country).upper()
 
             api = self._api(
                 self._username, self._password, self._region, self._country
@@ -91,10 +89,6 @@ class DreameWetDryConfigFlow(ConfigFlow, domain=DOMAIN):
                 if len(self._devices) > 1:
                     return await self.async_step_device()
                 errors["base"] = "no_devices"
-
-        country = (self.hass.config.country or "").upper()
-        if len(country) != 2:
-            country = ""
 
         return self.async_show_form(
             step_id="user",

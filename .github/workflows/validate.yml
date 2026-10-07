@@ -51,7 +51,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Install test dependencies
-        run: pip install pytest aiohttp pycryptodome "paho-mqtt>=2.0"
+        run: pip install pytest aiohttp pycryptodome voluptuous "paho-mqtt>=2.0"
       - name: Check component syntax
         run: python -m compileall -q custom_components
       - name: Run mapping, controls and regression tests

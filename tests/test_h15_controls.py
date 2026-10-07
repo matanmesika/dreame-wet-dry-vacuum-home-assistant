@@ -455,3 +455,76 @@ def test_h15_native_device_cards_and_h14_presentation(component):
     for model, expected in (("dreame.hold.w2449e", "diagnostic"), ("dreame.hold.w2306e", None)):
         entity = component["sensor"].DreameWetDryConsumableSensor(make_coordinator(component, model), CONSUMABLE_SENSORS[0])
         assert getattr(entity, "_attr_entity_category", None) == expected
+
+
+@pytest.fixture
+def config_flow_module(component, monkeypatch):
+    class Flow:
+        def __init_subclass__(cls, **kwargs):
+            pass
+
+        def async_show_form(self, **kwargs):
+            return kwargs
+
+        def async_create_entry(self, **kwargs):
+            return kwargs
+
+    class Country:
+        def __call__(self, value):
+            return value
+
+    entries = sys.modules["homeassistant.config_entries"]
+    monkeypatch.setattr(entries, "ConfigFlow", Flow, raising=False)
+    monkeypatch.setattr(entries, "ConfigFlowResult", dict, raising=False)
+    selectors = types.ModuleType("homeassistant.helpers.selector")
+    selectors.CountrySelector = Country
+    monkeypatch.setitem(sys.modules, selectors.__name__, selectors)
+    client = types.ModuleType("homeassistant.helpers.aiohttp_client")
+    client.async_get_clientsession = lambda hass: None
+    monkeypatch.setitem(sys.modules, client.__name__, client)
+    name = "custom_components.dreame_wet_dry_vacuum.config_flow"
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    yield importlib.import_module(name)
+    sys.modules.pop(name, None)
+
+
+@pytest.mark.parametrize("system_country,manual", [("IL", False), ("il", False), (None, True), ("", True)])
+def test_country_field_only_needed_without_system_country(config_flow_module, system_country, manual):
+    flow = config_flow_module.DreameWetDryConfigFlow()
+    flow.hass = types.SimpleNamespace(config=types.SimpleNamespace(country=system_country))
+    result = asyncio.run(flow.async_step_user())
+    assert ("country" in result["data_schema"].schema) is manual
+
+
+@pytest.mark.parametrize("system_country,user_country,expected", [("il", None, "IL"), (None, "DE", "DE")])
+def test_setup_uses_automatic_country_without_changing_entry_configuration(config_flow_module, system_country, user_country, expected):
+    flow = config_flow_module.DreameWetDryConfigFlow()
+    flow.hass = types.SimpleNamespace(config=types.SimpleNamespace(country=system_country))
+    api = types.SimpleNamespace(login=AsyncMock(), get_devices=AsyncMock(return_value=[{"did": "device", "model": "dreame.hold.w2449e"}]))
+    seen = []
+    flow._api = lambda username, password, region, country: seen.append((region, country)) or api
+    flow.async_set_unique_id = AsyncMock()
+    flow._abort_if_unique_id_configured = lambda: None
+    flow._async_abort_entries_match = lambda data: None
+    data = {"username": "user", "password": "pw", "region": "auto"}
+    if user_country:
+        data["country"] = user_country
+    result = asyncio.run(flow.async_step_user(data))
+    assert seen == [("auto", expected)]
+    assert result["data"]["country"] == expected
+    assert result["data"]["region"] == "auto"
+    assert result["data"]["username"] == "user"
+    assert result["data"]["device_id"] == "device"
+    api.login.assert_awaited_once()
+
+
+def test_reauth_preserves_existing_account_country_and_manual_server(config_flow_module):
+    flow = config_flow_module.DreameWetDryConfigFlow()
+    flow.hass = types.SimpleNamespace(config=types.SimpleNamespace(country="IL"))
+    entry = types.SimpleNamespace(data={"username": "user", "country": "DE", "region": "eu"})
+    flow._get_reauth_entry = lambda: entry
+    seen = []
+    flow._api = lambda username, password, region, country: seen.append((region, country)) or types.SimpleNamespace(login=AsyncMock())
+    flow.async_update_reload_and_abort = lambda entry, data_updates: data_updates
+    assert asyncio.run(flow.async_step_reauth_confirm({"password": "new-password"})) == {"password": "new-password"}
+    assert seen == [("eu", "DE")]

@@ -156,6 +156,62 @@ class TestLogin:
 
 
 class TestAuthedRequests:
+    @pytest.mark.parametrize("region", ["auto", "eu"])
+    def test_device_listing_never_repeats_password_between_backends(self, region):
+        tokens = []
+        lists = []
+
+        def handler(url, kwargs):
+            if "oauth/token" in url:
+                tokens.append(kwargs["data"])
+                return FakeResponse(200, TOKEN_OK)
+            lists.append(url)
+            return FakeResponse(200, {"data": {"page": {"records": []}}})
+
+        api = DreameAPI("user", "pw", region=region, country="IL", session=FakeSession(handler))
+        assert run(api.get_devices()) == []
+        first_count = len(lists)
+        assert first_count > 1 if region == "auto" else first_count == 1
+        assert run(api.get_devices()) == []
+        assert len(lists) == first_count + 1
+        assert len(tokens) == 1
+        assert tokens[0]["country"] == "IL"
+
+    def test_authoritative_account_region_does_not_probe_other_backends(self):
+        lists = []
+
+        def handler(url, kwargs):
+            if "oauth/token" in url:
+                return FakeResponse(200, {**TOKEN_OK, "region": "i2"})
+            lists.append(url)
+            return FakeResponse(200, {"data": {"page": {"records": []}}})
+
+        api = DreameAPI("user", "pw", region="auto", country="IL", session=FakeSession(handler))
+        assert run(api.get_devices()) == []
+        assert len(lists) == 1
+        assert lists[0].startswith("https://i2.iot.dreame.tech:")
+
+    def test_found_region_is_reused_after_device_list_becomes_empty(self):
+        found = False
+        lists = []
+
+        def handler(url, kwargs):
+            nonlocal found
+            if "oauth/token" in url:
+                return FakeResponse(200, TOKEN_OK)
+            lists.append(url)
+            if url.startswith("https://us.iot.dreame.tech:") and not found:
+                found = True
+                return FakeResponse(200, {"data": {"page": {"records": [{"did": "device"}]}}})
+            return FakeResponse(200, {"data": {"page": {"records": []}}})
+
+        api = DreameAPI("user", "pw", region="auto", country="IL", session=FakeSession(handler))
+        assert run(api.get_devices()) == [{"did": "device"}]
+        count = len(lists)
+        assert run(api.get_devices()) == []
+        assert len(lists) == count + 1
+        assert lists[-1].startswith("https://us.iot.dreame.tech:")
+
     @pytest.mark.parametrize("body", [
         {}, {"data": None}, {"data": {"result": [{"code": 0, "value": -1}, {"code": 0}]}}, {"data": {"result": []}},
         {"data": {"result": [{"code": -1}, {"code": 0}]}},
