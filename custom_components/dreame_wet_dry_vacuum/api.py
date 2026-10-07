@@ -480,11 +480,17 @@ class DreameAPI:
         return result.get("data", {}).get("code", -1) == 0
 
     async def discover_properties(
-        self, device_id: str, siid_range: range = range(1, 11), piid_range: range = range(1, 21)
+        self,
+        device_id: str,
+        siid_range: range = range(1, 31),
+        piid_range: range = range(1, 81),
     ) -> dict[tuple[int, int], Any]:
         """
-        Probe all siid/piid combinations and return those that return valid values.
-        Useful for discovering what a new device exposes.
+        Probe SIID/PIID combinations and return properties with valid responses.
+
+        The default range intentionally covers the higher service/property IDs
+        already used by Dreame wet & dry vacuums, making it suitable for new
+        model discovery such as H15 without assuming H14-only ranges.
         """
         all_props = [
             {"siid": s, "piid": p} for s in siid_range for p in piid_range
