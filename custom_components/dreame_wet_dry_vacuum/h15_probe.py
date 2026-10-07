@@ -333,7 +333,7 @@ async def async_export_h15_app_probe(coordinator) -> dict[str, Any]:
 
     output_dir = Path(coordinator.hass.config.path("dreame_h15_probe"))
     await coordinator.hass.async_add_executor_job(
-        output_dir.mkdir, parents=True, exist_ok=True
+        output_dir.mkdir, 0o777, True, True
     )
 
     private_json = output_dir / "metadata_private.json"
