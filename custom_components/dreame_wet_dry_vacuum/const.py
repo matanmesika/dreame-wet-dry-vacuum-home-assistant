@@ -283,6 +283,7 @@ KNOWN_BUTTON_PROPS: dict[tuple[int, int], dict] = {
 MQTT_ONLY_KEYS: set[tuple[int, int]] = {(1, 29), (1, 30)}
 
 CONF_REGION = "region"
+CONF_COUNTRY = "country"
 CONF_DEVICE_ID = "device_id"
 
 REGIONS = {
