@@ -18,6 +18,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
+    if coordinator.is_h15_pro_heat:
+        # H15 controls remain read-only until each write is validated on-device.
+        return
+
     async_add_entities(
         DreameWetDrySwitch(coordinator, key, meta)
         for key, meta in KNOWN_SWITCH_PROPS.items()
