@@ -7,7 +7,8 @@
         "data": {
           "username": "Adresse e-mail",
           "password": "Mot de passe",
-          "region": "Région"
+          "region": "Région",
+          "country": "Code pays"
         }
       },
       "device": {
