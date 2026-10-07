@@ -17,9 +17,10 @@ def _user_schema(default_country: str) -> vol.Schema:
         {
             vol.Required(CONF_USERNAME): str,
             vol.Required(CONF_PASSWORD): str,
-            vol.Required(CONF_REGION, default="eu"): vol.In(REGIONS),
+            vol.Required(CONF_REGION, default="auto"): vol.In(REGIONS),
             vol.Required(CONF_COUNTRY, default=default_country): vol.All(
-                str, vol.Length(min=2, max=2)
+                str,
+                vol.Match(r"^[A-Za-z]{2}$"),
             ),
         }
     )
@@ -45,7 +46,7 @@ class DreameWetDryConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._username: str = ""
         self._password: str = ""
-        self._region: str = "eu"
+        self._region: str = "auto"
         self._country: str = "DE"
         self._devices: list[dict[str, Any]] = []
 
