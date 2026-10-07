@@ -25,30 +25,37 @@ from .const import (
     STATUS_GROUP,
 )
 from .dreame_mqtt import DreameMqttClient
-
-# All "siid.piid" keys worth polling from the cloud status endpoint.
-# MQTT_ONLY_KEYS (fast-changing progress) are excluded: they're driven by the
-# real-time MQTT push, and a coarse 5-min poll would make them jump around.
-_POLL_KEYS: list[str] = sorted(
-    {f"{s}.{p}" for s, p in (
-        set(KNOWN_MQTT_PROPS)
-        | set(KNOWN_BINARY_PROPS)
-        | set(KNOWN_SWITCH_PROPS)
-        | set(KNOWN_NUMBER_PROPS)
-        | set(KNOWN_SELECT_PROPS)
-    ) - MQTT_ONLY_KEYS}
-    | set(CONSUMABLE_MAX_KEYS)
-)
+from .profiles import is_h15_pro_heat
 
 _LOGGER = logging.getLogger(__name__)
 
-# Safety-net HTTP refresh interval (MQTT is the primary, real-time source)
 HTTP_REFRESH = timedelta(minutes=5)
+
+# Normal H14/legacy polling set.
+_POLL_KEYS: list[str] = sorted(
+    {
+        f"{s}.{p}"
+        for s, p in (
+            set(KNOWN_MQTT_PROPS)
+            | set(KNOWN_BINARY_PROPS)
+            | set(KNOWN_SWITCH_PROPS)
+            | set(KNOWN_NUMBER_PROPS)
+            | set(KNOWN_SELECT_PROPS)
+        )
+        - MQTT_ONLY_KEYS
+    }
+    | set(CONSUMABLE_MAX_KEYS)
+)
+
+# H15 discovery is intentionally broad so the integration does not need a
+# hardcoded list of every property before a model is mapped.
+_H15_SIID_RANGE = range(1, 31)
+_H15_PIID_RANGE = range(1, 81)
+_H15_DISCOVERY_CHUNK = 100
 
 
 class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Holds live device state. Primary feed is MQTT push; HTTP snapshot seeds
-    battery/status and acts as a periodic safety net."""
+    """Hold live device state from MQTT plus cloud polling."""
 
     def __init__(
         self,
@@ -63,23 +70,31 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER,
             config_entry=entry,
             name=f"{DOMAIN}_{device_id}",
-            # No self-rescheduling interval: async_set_updated_data (fired on
-            # every MQTT push) would postpone it indefinitely while the device
-            # is active. The safety-net poll runs on an independent timer
-            # instead (see start_polling).
             update_interval=None,
         )
         self.api = api
         self.device_id = device_id
         self.device_info_raw = device_info
-        # Latest cloud snapshot (online, battery, status…), refreshed each poll
         self.snapshot: dict[str, Any] = {}
-        # Live property store keyed by (siid, piid)
         self.props: dict[tuple[int, int], Any] = {}
-        # Callback set by the sensor platform to add entities for new props
         self.new_prop_callback: Callable[[set[tuple[int, int]]], None] | None = None
         self.mqtt: DreameMqttClient | None = None
         self._unsub_poll: Callable[[], None] | None = None
+
+        self._model = str(device_info.get("model") or "")
+        self._is_h15 = is_h15_pro_heat(self._model)
+        self._h15_discovery_done = False
+        self._h15_poll_keys: list[str] = []
+
+    @property
+    def model(self) -> str:
+        """Return the Dreame model identifier."""
+        return self._model
+
+    @property
+    def is_h15_pro_heat(self) -> bool:
+        """Return whether this coordinator is for the H15 Pro Heat profile."""
+        return self._is_h15
 
     @callback
     def start_polling(self) -> None:
@@ -90,6 +105,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @callback
     def stop_polling(self) -> None:
+        """Stop the fixed-interval poll."""
         if self._unsub_poll:
             self._unsub_poll()
             self._unsub_poll = None
@@ -104,13 +120,14 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def start_mqtt(self) -> None:
         """Create and start the MQTT client.
 
-        Does blocking I/O (SSL context) — call from an executor.
+        This performs blocking SSL setup and is called from an executor.
         """
         snap = self.device_info_raw
         bind = snap.get("bindDomain") or snap.get("bind_domain")
         if not bind:
             _LOGGER.warning("No bindDomain; MQTT disabled, HTTP polling only")
             return
+
         self.mqtt = DreameMqttClient(
             uid=self.api.uid,
             access_token=self.api.access_token,
@@ -122,46 +139,148 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.mqtt.start()
 
     async def async_set_prop(self, siid: int, piid: int, value: Any) -> bool:
-        """Write a property to the device, then optimistically update state."""
+        """Write a property, then optimistically update state on success."""
         ok = await self.api.set_property(self.device_id, siid, piid, value)
         if ok:
             self.props[(siid, piid)] = value
             self.async_set_updated_data(self._build_data())
         else:
-            _LOGGER.warning("set_property %s.%s=%s rejected by device", siid, piid, value)
+            _LOGGER.warning(
+                "set_property %s.%s=%s rejected by device", siid, piid, value
+            )
         return ok
 
     def _handle_mqtt_update(self, state: dict[tuple[int, int], Any]) -> None:
-        """Called from the MQTT thread when properties change."""
-        # Marshal everything (including the props mutation) to the HA loop
+        """Receive an MQTT update from the MQTT thread."""
         self.hass.loop.call_soon_threadsafe(self._apply_mqtt_state, dict(state))
 
     @callback
     def _apply_mqtt_state(self, state: dict[tuple[int, int], Any]) -> None:
+        """Apply MQTT properties on the Home Assistant event loop."""
         new_keys = set(state) - set(self.props)
         self.props.update(state)
+
+        if self._is_h15 and new_keys:
+            for siid, piid in sorted(new_keys):
+                key = f"{siid}.{piid}"
+                if key not in self._h15_poll_keys:
+                    self._h15_poll_keys.append(key)
+            self._h15_poll_keys.sort(key=self._property_sort_key)
+
         if new_keys and self.new_prop_callback:
             self.new_prop_callback(new_keys)
+
         self.async_set_updated_data(self._build_data())
 
+    @staticmethod
+    def _property_sort_key(key: str) -> tuple[int, int]:
+        try:
+            siid, piid = key.split(".", 1)
+            return int(siid), int(piid)
+        except (TypeError, ValueError):
+            return (9999, 9999)
+
     def _build_data(self) -> dict[str, Any]:
-        """Flatten props + snapshot into a name->value dict for entities."""
-        data: dict[str, Any] = {f"{s}.{p}": v for (s, p), v in self.props.items()}
-        # status_group from the main status property (2.1) if present
-        status = self.props.get((2, 1))
-        if status is not None:
-            data["status_group"] = STATUS_GROUP.get(int(status), "unknown")
+        """Flatten properties for Home Assistant entities."""
+        data: dict[str, Any] = {
+            f"{siid}.{piid}": value
+            for (siid, piid), value in self.props.items()
+        }
+
+        # H14 status labels are not applied to H15 until its status enum is
+        # independently validated.
+        if not self._is_h15:
+            status = self.props.get((2, 1))
+            if status is not None:
+                try:
+                    data["status_group"] = STATUS_GROUP.get(int(status), "unknown")
+                except (TypeError, ValueError):
+                    data["status_group"] = "unknown"
+
         return data
 
+    async def _get_status_props_chunked(
+        self,
+        keys: list[str],
+        *,
+        chunk_size: int = _H15_DISCOVERY_CHUNK,
+    ) -> dict[str, Any]:
+        """Read status properties in bounded chunks."""
+        result: dict[str, Any] = {}
+        for start in range(0, len(keys), chunk_size):
+            chunk = keys[start : start + chunk_size]
+            try:
+                values = await self.api.get_status_props(self.device_id, chunk)
+            except DreameAuthError:
+                raise
+            except (DreameAPIError, ValueError) as err:
+                _LOGGER.debug("status_props chunk failed (non-fatal): %s", err)
+                continue
+            if isinstance(values, dict):
+                result.update(values)
+        return result
+
+    async def _async_discover_h15_properties(self) -> None:
+        """Discover every cloud-cached property exposed by the H15 profile."""
+        if self._h15_discovery_done:
+            return
+
+        keys = [
+            f"{siid}.{piid}"
+            for siid in _H15_SIID_RANGE
+            for piid in _H15_PIID_RANGE
+        ]
+        values = await self._get_status_props_chunked(keys)
+
+        discovered: list[str] = []
+        for key, value in values.items():
+            if value is None:
+                continue
+            try:
+                siid_text, piid_text = key.split(".", 1)
+                pair = (int(siid_text), int(piid_text))
+            except (TypeError, ValueError):
+                continue
+            self.props[pair] = value
+            discovered.append(key)
+
+        self._h15_poll_keys = sorted(set(discovered), key=self._property_sort_key)
+        self._h15_discovery_done = True
+
+        _LOGGER.info(
+            "H15 Pro Heat profile discovered %d properties for model=%s",
+            len(self._h15_poll_keys),
+            self._model,
+        )
+
+    async def _async_poll_h15_properties(self) -> None:
+        """Refresh all properties discovered for the H15."""
+        if not self._h15_discovery_done:
+            await self._async_discover_h15_properties()
+            return
+
+        if not self._h15_poll_keys:
+            return
+
+        values = await self._get_status_props_chunked(self._h15_poll_keys)
+        for key, value in values.items():
+            if value is None:
+                continue
+            try:
+                siid_text, piid_text = key.split(".", 1)
+                self.props[(int(siid_text), int(piid_text))] = value
+            except (TypeError, ValueError):
+                continue
+
     async def _async_update_data(self) -> dict[str, Any]:
-        """HTTP safety-net refresh: seed battery + status from the snapshot."""
+        """Refresh cloud snapshot and cached properties."""
         try:
             snapshot = await self.api.get_device_snapshot(self.device_id)
         except DreameAuthError as err:
-            # Credentials rejected: surface it so HA starts a reauth flow
-            raise ConfigEntryAuthFailed(f"Dreame credentials rejected: {err}") from err
+            raise ConfigEntryAuthFailed(
+                f"Dreame credentials rejected: {err}"
+            ) from err
         except DreameAPIError as err:
-            # If MQTT is alive we can tolerate HTTP errors
             if self.props:
                 return self._build_data()
             raise UpdateFailed(f"Dreame API error: {err}") from err
@@ -172,18 +291,21 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.props[(3, 1)] = snapshot["battery"]
             if snapshot.get("status") is not None and (2, 1) not in self.props:
                 self.props[(2, 1)] = snapshot["status"]
-            # Refresh MQTT credentials if the token rotated (it expires after 2 h)
             if self.mqtt and self.api.access_token:
                 self.mqtt.update_token(self.api.access_token)
 
-        # Read cloud-cached property values (warn/error, consumables, settings…).
-        # This is what makes alerts like "dirty tank full" reliable even when MQTT
-        # missed the push (e.g. HA started after the event fired).
         try:
-            values = await self.api.get_status_props(self.device_id, _POLL_KEYS)
-            for key, value in values.items():
-                s, _, p = key.partition(".")
-                self.props[(int(s), int(p))] = value
+            if self._is_h15:
+                await self._async_poll_h15_properties()
+            else:
+                values = await self.api.get_status_props(self.device_id, _POLL_KEYS)
+                for key, value in values.items():
+                    siid_text, _, piid_text = key.partition(".")
+                    self.props[(int(siid_text), int(piid_text))] = value
+        except DreameAuthError as err:
+            raise ConfigEntryAuthFailed(
+                f"Dreame credentials rejected: {err}"
+            ) from err
         except (DreameAPIError, ValueError) as err:
             _LOGGER.debug("status_props poll failed (non-fatal): %s", err)
 
