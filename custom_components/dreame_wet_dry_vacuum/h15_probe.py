@@ -29,6 +29,8 @@ _SENSITIVE_KEYS = {
     "did",
     "email",
     "mac",
+    "masteruid",
+    "masteruid2uuid",
     "password",
     "serial",
     "serialnumber",
@@ -36,6 +38,7 @@ _SENSITIVE_KEYS = {
     "ssid",
     "token",
     "uid",
+    "uuid",
     "username",
 }
 
@@ -58,6 +61,34 @@ def _redact_for_sharing(value: Any) -> Any:
         return out
     if isinstance(value, list):
         return [_redact_for_sharing(item) for item in value]
+
+    # Dreame sometimes nests device metadata as JSON serialized inside a
+    # string. Sanitize that payload too so metadata_share.json stays safe.
+    if isinstance(value, str):
+        stripped = value.strip()
+        if (
+            len(stripped) >= 2
+            and stripped[0] in "[{"
+            and stripped[-1] in "]}"
+        ):
+            try:
+                decoded = json.loads(stripped)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                decoded = None
+            if isinstance(decoded, (dict, list)):
+                return json.dumps(
+                    _redact_for_sharing(decoded),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+
+        # Last-resort redaction for MAC addresses embedded in opaque strings.
+        return re.sub(
+            r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}:){5}[0-9a-f]{2}(?![0-9a-f])",
+            "<redacted-mac>",
+            value,
+        )
+
     return value
 
 
