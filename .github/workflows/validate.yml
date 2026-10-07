@@ -42,3 +42,16 @@ jobs:
         run: pip install pytest aiohttp pycryptodome "paho-mqtt>=2.0"
       - name: Run tests
         run: pytest -q
+
+  package:
+    name: H15 test bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Upload integration folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: dreame-wet-dry-vacuum-h15-test
+          path: custom_components/dreame_wet_dry_vacuum
+          if-no-files-found: error
+          retention-days: 7
