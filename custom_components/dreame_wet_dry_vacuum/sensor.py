@@ -27,6 +27,7 @@ from .const import (
 )
 from .coordinator import DreameWetDryCoordinator
 from .entity import build_device_info
+from .h15_settings import H15_CONTROL_KEYS
 from .profiles import H15_PROPERTY_META
 
 _LOGGER = logging.getLogger(__name__)
@@ -184,6 +185,11 @@ class DreameH15PropertySensor(
         self._attr_name = self._meta.get("name", f"Raw {self._data_key}")
         self._attr_icon = self._meta.get("icon", "mdi:code-tags")
         self._attr_device_info = build_device_info(coordinator)
+
+        if key in H15_CONTROL_KEYS:
+            # Keep raw values as optional diagnostics beside proper controls.
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+            self._attr_entity_registry_enabled_default = False
 
         if self._meta.get("diagnostic", True):
             self._attr_entity_category = EntityCategory.DIAGNOSTIC

@@ -110,7 +110,7 @@ def test_h15_export_includes_profile_and_bounded_live_reads(probe, tmp_path):
     coordinator = FakeCoordinator()
     result = asyncio.run(probe.async_export_h15_app_probe(coordinator))
     shared = json.loads(Path(result["share_metadata"]).read_text())
-    assert shared["integration_version"] == "0.2.1"
+    assert shared["integration_version"] == "0.2.2"
     assert shared["exported_at"]
     assert shared["mapping_refresh"] == {"ok": True}
     assert shared["mapping_changes"]["16.7"] == {"old": 1, "new": 4}

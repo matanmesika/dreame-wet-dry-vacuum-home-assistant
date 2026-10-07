@@ -556,6 +556,49 @@ class DreameAPI:
         results = result.get("data", {}).get("result", [])
         return all(r.get("code", -1) == 0 for r in results)
 
+    async def set_h15_properties(
+        self, device_id: str, properties: dict[tuple[int, int], int]
+    ) -> bool:
+        """Send one H15 app-style batch and require explicit acknowledgements.
+
+        Kept separate from the existing H14 set_property path.
+        """
+        if not properties:
+            return False
+        req_id = _random_request_id()
+        params = [
+            {"siid": siid, "piid": piid, "value": value}
+            for (siid, piid), value in properties.items()
+        ]
+        result = await self._authed_post(
+            self._base_url + ENDPOINTS["send_command"].format(prefix=DREAME_IOT_PREFIX),
+            {
+                "did": device_id, "id": req_id,
+                "data": {
+                    "did": device_id, "id": req_id, "method": "set_properties",
+                    "params": params, "from": "100000",
+                },
+            },
+        )
+        data = result.get("data")
+        rows = data.get("result") if isinstance(data, dict) else None
+        if not isinstance(rows, list) or len(rows) != len(params):
+            return False
+        returned: set[tuple[int, int]] = set()
+        for row in rows:
+            if not isinstance(row, dict) or row.get("code") != 0:
+                return False
+            if "siid" in row or "piid" in row:
+                try:
+                    pair = (int(row["siid"]), int(row["piid"]))
+                except (KeyError, TypeError, ValueError):
+                    return False
+                if pair not in properties or pair in returned:
+                    return False
+                returned.add(pair)
+        # Some cloud responses contain only code=0 in request order.
+        return not returned or returned == set(properties)
+
     async def call_action(
         self, device_id: str, siid: int, aiid: int, params: list | None = None
     ) -> bool:

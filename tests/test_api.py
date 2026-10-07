@@ -156,6 +156,35 @@ class TestLogin:
 
 
 class TestAuthedRequests:
+    @pytest.mark.parametrize("body", [
+        {}, {"data": None}, {"data": {"result": []}},
+        {"data": {"result": [{"code": -1}, {"code": 0}]}},
+        {"data": {"result": [{"siid": 24, "piid": 1, "code": 0}] * 2}},
+    ])
+    def test_h15_write_requires_acknowledgement_for_every_setting(self, body):
+        session = FakeSession(lambda url, kw: FakeResponse(
+            200, TOKEN_OK if "oauth/token" in url else body
+        ))
+        api = DreameAPI("u", "p", country="IL", session=session)
+        assert not run(api.set_h15_properties("did", {(16, 1): 1, (16, 2): 2}))
+
+    def test_h15_batch_write_uses_one_rpc_and_preserves_h14_single_write(self):
+        calls = []
+
+        def handler(url, kwargs):
+            if "oauth/token" in url:
+                return FakeResponse(200, TOKEN_OK)
+            params = kwargs["json"]["data"]["params"]
+            calls.append(params)
+            return FakeResponse(200, {"data": {"result": [
+                {"siid": p["siid"], "piid": p["piid"], "code": 0} for p in params
+            ]}})
+
+        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
+        assert run(api.set_h15_properties("did", {(16, 1): 1, (16, 2): 2}))
+        assert calls == [[{"siid": 16, "piid": 1, "value": 1}, {"siid": 16, "piid": 2, "value": 2}]]
+        assert run(api.set_property("did", 23, 1, 1))
+        assert calls[-1] == [{"siid": 23, "piid": 1, "value": 1}]
     @pytest.mark.parametrize("body", [{"data": None}, {}, {"data": {"result": None}}])
     def test_get_properties_handles_empty_sleeping_response(self, body):
         def handler(url, kwargs):

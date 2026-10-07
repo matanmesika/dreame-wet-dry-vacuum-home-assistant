@@ -13,11 +13,13 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import DreameAPI, DreameAPIError, DreameAuthError
 from .const import CONF_COUNTRY, CONF_DEVICE_ID, CONF_REGION
 from .coordinator import DreameWetDryCoordinator
+from .h15_settings import H15_CONTROL_KEYS
 
 _LOGGER = logging.getLogger(__name__)
 
 _H15_ENTITY_SCHEMA_KEY = "_h15_entity_schema"
 _H15_ENTITY_SCHEMA_VERSION = 2
+_H15_CONTROLS_SCHEMA_KEY = "_h15_controls_schema"
 
 PLATFORMS = [
     Platform.SENSOR,
@@ -99,6 +101,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: DreameWetDryConfigEntry)
         _LOGGER.info(
             "Migrated H15 Pro Heat entity registry to schema version %d",
             _H15_ENTITY_SCHEMA_VERSION,
+        )
+
+    # Move only superseded H15 setting sensors into disabled diagnostics.
+    # Leave H14 entries and every other H15 sensor/unique ID untouched.
+    if coordinator.is_h15_pro_heat and not entry.data.get(_H15_CONTROLS_SCHEMA_KEY):
+        registry = er.async_get(hass)
+        superseded = {
+            f"{coordinator.device_id}_h15_property_{siid}_{piid}"
+            for siid, piid in H15_CONTROL_KEYS
+        }
+        for sensor_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+            if (
+                sensor_entry.domain == "sensor"
+                and sensor_entry.unique_id in superseded
+                and sensor_entry.disabled_by is None
+            ):
+                registry.async_update_entity(
+                    sensor_entry.entity_id, disabled_by=er.RegistryEntryDisabler.INTEGRATION
+                )
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, _H15_CONTROLS_SCHEMA_KEY: 1}
         )
 
     entry.runtime_data = coordinator

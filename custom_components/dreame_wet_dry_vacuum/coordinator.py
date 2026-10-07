@@ -1,6 +1,7 @@
 """Data coordinator for Dreame wet & dry vacuum (MQTT push + HTTP seed)."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -8,7 +9,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -25,6 +26,7 @@ from .const import (
     STATUS_GROUP,
 )
 from .dreame_mqtt import DreameMqttClient
+from .h15_settings import build_h15_write_plan
 from .profiles import H15_TARGETED_KEYS, is_h15_pro_heat
 
 _LOGGER = logging.getLogger(__name__)
@@ -97,6 +99,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._h15_mapping_snapshot: dict[str, Any] = {}
         self._h15_last_changes: dict[str, dict[str, Any]] = {}
         self._h15_last_scan: datetime | None = None
+        self._h15_write_lock = asyncio.Lock()
 
     @property
     def model(self) -> str:
@@ -171,6 +174,36 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "set_property %s.%s=%s rejected by device", siid, piid, value
             )
         return ok
+
+    async def async_set_h15_setting(
+        self, key: tuple[int, int], value: int, *, arm_bit: int | None = None
+    ) -> None:
+        """Write an H15 setting batch without using legacy H14 mappings."""
+        if not self._is_h15:
+            raise ValueError("H15 controls cannot write to this device model")
+        async with self._h15_write_lock:
+            if arm_bit is not None:
+                # Refresh the shared bitfield when live RPC is available.
+                # A sleeping device may return no value; never invent a default.
+                rows = await self.api.get_properties(
+                    self.device_id, [{"siid": 24, "piid": 1}]
+                )
+                for row in rows:
+                    if (
+                        row.get("code") == 0 and row.get("siid") == 24
+                        and row.get("piid") == 1 and row.get("value") is not None
+                    ):
+                        self.props[(24, 1)] = row["value"]
+            plan = build_h15_write_plan(key, value, self.props, arm_bit=arm_bit)
+            ok = await self.api.set_h15_properties(self.device_id, plan)
+            if not ok:
+                raise HomeAssistantError(
+                    "Dreame did not confirm the H15 setting change; refresh the device and retry"
+                )
+            new_keys = self._apply_h15_values({f"{s}.{p}": v for (s, p), v in plan.items()})
+            if new_keys and self.new_prop_callback:
+                self.new_prop_callback(new_keys)
+            self.async_set_updated_data(self._build_data())
 
     def _handle_mqtt_update(self, state: dict[tuple[int, int], Any]) -> None:
         """Receive an MQTT update from the MQTT thread."""

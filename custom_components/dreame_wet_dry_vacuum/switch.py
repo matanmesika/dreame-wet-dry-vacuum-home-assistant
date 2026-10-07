@@ -10,6 +10,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import DreameWetDryConfigEntry
 from .const import KNOWN_SWITCH_PROPS
 from .entity import DreameWetDryEntity
+from .h15_controls import DreameH15Switch
+from .h15_settings import H15_ARM_MODES, H15_SWITCH_SETTINGS
 
 
 async def async_setup_entry(
@@ -19,7 +21,10 @@ async def async_setup_entry(
 ) -> None:
     coordinator = entry.runtime_data
     if coordinator.is_h15_pro_heat:
-        # H15 controls remain read-only until each write is validated on-device.
+        async_add_entities([
+            *(DreameH15Switch(coordinator, key) for key in H15_SWITCH_SETTINGS),
+            *(DreameH15Switch(coordinator, (24, 1), arm_bit=bit) for bit in H15_ARM_MODES),
+        ])
         return
 
     async_add_entities(

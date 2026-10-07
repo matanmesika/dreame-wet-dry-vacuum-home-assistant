@@ -95,7 +95,7 @@ The integration creates one device with all of its entities. State is updated in
 
 ### H15 Pro Heat validation profile
 
-The consolidated **0.2.1** test build is documented in [H15_MAPPING.md](H15_MAPPING.md). Manual installation and device validation steps in Hebrew are in [INSTALL_HE.md](INSTALL_HE.md). The diagnostic export includes version/time markers, the full mapping profile and scan differences.
+The consolidated **0.2.2** test build is documented in [H15_MAPPING.md](H15_MAPPING.md). Manual installation and device validation steps in Hebrew are in [INSTALL_HE.md](INSTALL_HE.md). The diagnostic export includes version/time markers, the full mapping profile and scan differences.
 
 This branch contains an active validation profile for the **Dreame H15 Pro Heat**
 model `dreame.hold.w2449e`.
@@ -111,7 +111,7 @@ For H15 the coordinator now:
 - scans **SIID 1-40 plus SIID 100 / PIID 1-120** during initial mapping discovery;
 - performs targeted read-only `get_properties` requests for app-defined keys that
   may be absent from the cloud cache;
-- exposes every property actually returned by the device as a read-only sensor;
+- exposes returned telemetry as sensors and mapped settings as selects, switches and a volume slider;
 - decodes known H15 enums while preserving the exact raw value in entity attributes;
 - keeps unknown properties as `Raw <siid.piid>`;
 - refreshes only discovered properties during the normal five-minute safety poll;
@@ -131,9 +131,12 @@ Two diagnostic buttons are available on H15:
   `/config/dreame_h15_probe/` for mapping analysis.
 
 Unverified H14 writable controls and H14 alert/charging decoding remain suppressed
-on H15. The current H15 validation profile is intentionally read-only apart from
-the diagnostic export/refresh operations; no arbitrary property writes are used
-for reverse engineering.
+on H15. Version 0.2.2 adds nine selects, nine switches (including four independent
+lifting-arm modes), and a 0–100% voice-volume slider using H15 app-derived write
+plans. Coupled cleaning settings follow the app, and rejected writes raise an error
+without reporting success. Duplicate setting sensors become optional diagnostics.
+Physical device validation is still required; schedules and language-pack IDs remain
+read-only until their encodings are verified.
 
 Properties that still have no verified H15 meaning remain visible as raw
 diagnostics so they can be identified with controlled one-setting-at-a-time tests.
