@@ -195,6 +195,14 @@ class DreameH15PropertySensor(
         if isinstance(raw, (list, dict, tuple)):
             return json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
 
+        value_map = self._meta.get("value_map")
+        if isinstance(value_map, dict):
+            try:
+                numeric = int(raw)
+            except (TypeError, ValueError):
+                return str(raw)
+            return value_map.get(numeric, f"Unknown ({raw})")
+
         return raw
 
     @property
@@ -211,6 +219,12 @@ class DreameH15PropertySensor(
 
         if note := self._meta.get("note"):
             attrs["mapping_note"] = note
+
+        value_map = self._meta.get("value_map")
+        if isinstance(value_map, dict):
+            attrs["known_values"] = {
+                str(key): value for key, value in value_map.items()
+            }
 
         if self._meta.get("bitfield") and raw is not None:
             try:
