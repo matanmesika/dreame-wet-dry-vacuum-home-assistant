@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import zipfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -107,6 +109,195 @@ async def _download(
     }
 
 
+
+_TEXT_EXTENSIONS = {
+    ".js", ".json", ".txt", ".xml", ".html", ".htm", ".css",
+    ".map", ".plist", ".properties", ".yaml", ".yml",
+}
+_MAX_SCAN_FILE_BYTES = 8 * 1024 * 1024
+_MAX_SCAN_TOTAL_BYTES = 40 * 1024 * 1024
+_MAX_HITS_PER_FILE = 100
+
+_H15_SEARCH_TERMS = (
+    "siid",
+    "piid",
+    "get_properties",
+    "set_properties",
+    "action",
+    "battery",
+    "charging",
+    "dock",
+    "suction",
+    "water",
+    "detergent",
+    "dirty",
+    "tank",
+    "drying",
+    "self-clean",
+    "self clean",
+    "roller",
+    "brush",
+    "filter",
+    "traction",
+    "mode",
+    "hot water",
+    "temperature",
+)
+
+
+def _safe_snippet(text: str, start: int, end: int, radius: int = 120) -> str:
+    """Return a compact printable context snippet."""
+    left = max(0, start - radius)
+    right = min(len(text), end + radius)
+    snippet = text[left:right].replace("\x00", " ")
+    snippet = re.sub(r"\s+", " ", snippet).strip()
+    return snippet[:600]
+
+
+def _inspect_archive_sync(path: Path) -> dict[str, Any]:
+    """Inventory a downloaded plugin/archive without executing its contents."""
+    result: dict[str, Any] = {
+        "path": str(path),
+        "is_zip": False,
+        "files": [],
+        "miot_pairs": [],
+        "keyword_hits": [],
+    }
+
+    if not path.exists():
+        result["error"] = "file does not exist"
+        return result
+
+    if not zipfile.is_zipfile(path):
+        result["error"] = "download is not a ZIP archive"
+        return result
+
+    result["is_zip"] = True
+    scanned_total = 0
+    pair_seen: set[tuple[int, int, str]] = set()
+
+    pair_patterns = (
+        re.compile(
+            r"""["']?siid["']?\s*[:=]\s*(\d+).{0,120}?["']?piid["']?\s*[:=]\s*(\d+)""",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"""["']?piid["']?\s*[:=]\s*(\d+).{0,120}?["']?siid["']?\s*[:=]\s*(\d+)""",
+            re.IGNORECASE | re.DOTALL,
+        ),
+    )
+
+    with zipfile.ZipFile(path, "r") as archive:
+        infos = archive.infolist()
+        result["file_count"] = len(infos)
+        result["uncompressed_bytes"] = sum(info.file_size for info in infos)
+
+        for info in infos:
+            if info.is_dir():
+                continue
+
+            result["files"].append(
+                {
+                    "name": info.filename,
+                    "bytes": info.file_size,
+                    "compressed_bytes": info.compress_size,
+                }
+            )
+
+            suffix = Path(info.filename).suffix.lower()
+            likely_text = (
+                suffix in _TEXT_EXTENSIONS
+                or "bundle" in info.filename.lower()
+                or info.filename.lower().endswith("index")
+            )
+            if not likely_text:
+                continue
+            if info.file_size <= 0 or info.file_size > _MAX_SCAN_FILE_BYTES:
+                continue
+            if scanned_total + info.file_size > _MAX_SCAN_TOTAL_BYTES:
+                break
+
+            try:
+                raw = archive.read(info)
+            except Exception:
+                continue
+
+            scanned_total += len(raw)
+            text = raw.decode("utf-8", errors="ignore")
+            if not text:
+                continue
+
+            # Extract likely MIoT pair definitions from JavaScript/config.
+            for pattern_index, pattern in enumerate(pair_patterns):
+                for match in pattern.finditer(text):
+                    if pattern_index == 0:
+                        siid, piid = int(match.group(1)), int(match.group(2))
+                    else:
+                        piid, siid = int(match.group(1)), int(match.group(2))
+
+                    marker = (siid, piid, info.filename)
+                    if marker in pair_seen:
+                        continue
+                    pair_seen.add(marker)
+
+                    result["miot_pairs"].append(
+                        {
+                            "siid": siid,
+                            "piid": piid,
+                            "property": f"{siid}.{piid}",
+                            "file": info.filename,
+                            "context": _safe_snippet(
+                                text, match.start(), match.end()
+                            ),
+                        }
+                    )
+
+            # Find semantic words near property definitions / UI strings.
+            lower = text.lower()
+            per_file_hits = 0
+            for term in _H15_SEARCH_TERMS:
+                start = 0
+                while per_file_hits < _MAX_HITS_PER_FILE:
+                    pos = lower.find(term, start)
+                    if pos < 0:
+                        break
+                    result["keyword_hits"].append(
+                        {
+                            "term": term,
+                            "file": info.filename,
+                            "context": _safe_snippet(
+                                text, pos, pos + len(term)
+                            ),
+                        }
+                    )
+                    per_file_hits += 1
+                    start = pos + len(term)
+
+    result["scanned_text_bytes"] = scanned_total
+    result["miot_pairs"].sort(
+        key=lambda item: (item["siid"], item["piid"], item["file"])
+    )
+    return result
+
+
+async def _write_archive_report(coordinator, archive_path: Path) -> str | None:
+    """Create a JSON inventory/search report for a downloaded package."""
+    if not archive_path.exists():
+        return None
+
+    report = await coordinator.hass.async_add_executor_job(
+        _inspect_archive_sync, archive_path
+    )
+    report_path = archive_path.with_name(
+        f"{archive_path.stem}_inventory.json"
+    )
+    text = json.dumps(report, ensure_ascii=False, indent=2)
+    await coordinator.hass.async_add_executor_job(
+        report_path.write_text, text, "utf-8"
+    )
+    return str(report_path)
+
+
 async def async_export_h15_app_probe(coordinator) -> dict[str, Any]:
     """Collect Dreamehome app metadata and download the H15 model plugin.
 
@@ -189,11 +380,32 @@ async def async_export_h15_app_probe(coordinator) -> dict[str, Any]:
                 output_dir / "resources.zip",
             )
 
+    inventories: dict[str, str] = {}
+
+    appplugin_path = output_dir / "appplugin.zip"
+    if (
+        isinstance(downloads.get("appplugin"), dict)
+        and downloads["appplugin"].get("ok")
+    ):
+        report = await _write_archive_report(coordinator, appplugin_path)
+        if report:
+            inventories["appplugin"] = report
+
+    resources_path = output_dir / "resources.zip"
+    if (
+        isinstance(downloads.get("resources"), dict)
+        and downloads["resources"].get("ok")
+    ):
+        report = await _write_archive_report(coordinator, resources_path)
+        if report:
+            inventories["resources"] = report
+
     result = {
         "output_dir": str(output_dir),
         "share_metadata": str(share_json),
         "private_metadata": str(private_json),
         "downloads": downloads,
+        "inventories": inventories,
     }
 
     _LOGGER.warning(
