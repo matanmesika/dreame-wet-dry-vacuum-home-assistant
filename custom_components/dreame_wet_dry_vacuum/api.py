@@ -108,13 +108,15 @@ class DreameAPI:
         username: str,
         password: str,
         region: str = "eu",
-        country: str = "DE",
+        country: str = "",
         session: aiohttp.ClientSession | None = None,
     ) -> None:
         self._username = username
         self._password = password
         self._requested_region = region
         self._country = country.upper()
+        if len(self._country) != 2:
+            raise ValueError("Dreame account country must be a two-letter ISO country code")
         if region == "auto":
             self._region = COUNTRY_BOOTSTRAP_REGION.get(self._country, "eu")
         elif region in REGION_URLS:
