@@ -29,11 +29,30 @@ type DreameWetDryConfigEntry = ConfigEntry[DreameWetDryCoordinator]
 
 async def async_setup_entry(hass: HomeAssistant, entry: DreameWetDryConfigEntry) -> bool:
     """Set up Dreame wet & dry vacuum from a config entry."""
+    country = str(
+        entry.data.get(CONF_COUNTRY) or hass.config.country or ""
+    ).upper()
+    if len(country) != 2:
+        raise ConfigEntryNotReady(
+            "Dreame account country is missing; reconfigure the integration and select a country"
+        )
+
+    # Migrate legacy entries without silently forcing a specific country.
+    if entry.data.get(CONF_COUNTRY) != country or CONF_REGION not in entry.data:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                CONF_COUNTRY: country,
+                CONF_REGION: entry.data.get(CONF_REGION, "auto"),
+            },
+        )
+
     api = DreameAPI(
         username=entry.data[CONF_USERNAME],
         password=entry.data[CONF_PASSWORD],
-        region=entry.data.get(CONF_REGION, "eu"),
-        country=entry.data.get(CONF_COUNTRY, "DE"),
+        region=entry.data.get(CONF_REGION, "auto"),
+        country=country,
         session=async_get_clientsession(hass),
     )
 
