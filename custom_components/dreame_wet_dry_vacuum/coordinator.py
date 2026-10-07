@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -31,7 +31,6 @@ _LOGGER = logging.getLogger(__name__)
 
 HTTP_REFRESH = timedelta(minutes=5)
 
-# Normal H14/legacy polling set.
 _POLL_KEYS: list[str] = sorted(
     {
         f"{s}.{p}"
@@ -47,8 +46,7 @@ _POLL_KEYS: list[str] = sorted(
     | set(CONSUMABLE_MAX_KEYS)
 )
 
-# H15 discovery is intentionally broad so the integration does not need a
-# hardcoded list of every property before a model is mapped.
+# Broad H15 scan used for first discovery and manual mapping snapshots.
 _H15_SIID_RANGE = range(1, 31)
 _H15_PIID_RANGE = range(1, 81)
 _H15_DISCOVERY_CHUNK = 100
@@ -86,6 +84,11 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._h15_discovery_done = False
         self._h15_poll_keys: list[str] = []
 
+        # Mapping baseline and result from the last explicit H15 mapping scan.
+        self._h15_mapping_snapshot: dict[str, Any] = {}
+        self._h15_last_changes: dict[str, dict[str, Any]] = {}
+        self._h15_last_scan: datetime | None = None
+
     @property
     def model(self) -> str:
         """Return the Dreame model identifier."""
@@ -95,6 +98,16 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def is_h15_pro_heat(self) -> bool:
         """Return whether this coordinator is for the H15 Pro Heat profile."""
         return self._is_h15
+
+    @property
+    def h15_last_changes(self) -> dict[str, dict[str, Any]]:
+        """Return changes detected by the last manual H15 mapping scan."""
+        return self._h15_last_changes
+
+    @property
+    def h15_last_scan(self) -> datetime | None:
+        """Return timestamp of the last manual/initial H15 mapping scan."""
+        return self._h15_last_scan
 
     @callback
     def start_polling(self) -> None:
@@ -160,8 +173,8 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         new_keys = set(state) - set(self.props)
         self.props.update(state)
 
-        if self._is_h15 and new_keys:
-            for siid, piid in sorted(new_keys):
+        if self._is_h15:
+            for siid, piid in sorted(state):
                 key = f"{siid}.{piid}"
                 if key not in self._h15_poll_keys:
                     self._h15_poll_keys.append(key)
@@ -180,6 +193,14 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except (TypeError, ValueError):
             return (9999, 9999)
 
+    @staticmethod
+    def _all_h15_scan_keys() -> list[str]:
+        return [
+            f"{siid}.{piid}"
+            for siid in _H15_SIID_RANGE
+            for piid in _H15_PIID_RANGE
+        ]
+
     def _build_data(self) -> dict[str, Any]:
         """Flatten properties for Home Assistant entities."""
         data: dict[str, Any] = {
@@ -187,8 +208,8 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for (siid, piid), value in self.props.items()
         }
 
-        # H14 status labels are not applied to H15 until its status enum is
-        # independently validated.
+        # Do not apply H14 status decoding to the H15 while its enum is being
+        # remapped from the actual w2449e device.
         if not self._is_h15:
             status = self.props.get((2, 1))
             if status is not None:
@@ -220,19 +241,10 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 result.update(values)
         return result
 
-    async def _async_discover_h15_properties(self) -> None:
-        """Discover every cloud-cached property exposed by the H15 profile."""
-        if self._h15_discovery_done:
-            return
+    def _apply_h15_values(self, values: dict[str, Any]) -> set[tuple[int, int]]:
+        """Apply returned H15 values and return newly discovered property keys."""
+        new_keys: set[tuple[int, int]] = set()
 
-        keys = [
-            f"{siid}.{piid}"
-            for siid in _H15_SIID_RANGE
-            for piid in _H15_PIID_RANGE
-        ]
-        values = await self._get_status_props_chunked(keys)
-
-        discovered: list[str] = []
         for key, value in values.items():
             if value is None:
                 continue
@@ -241,20 +253,105 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 pair = (int(siid_text), int(piid_text))
             except (TypeError, ValueError):
                 continue
-            self.props[pair] = value
-            discovered.append(key)
 
-        self._h15_poll_keys = sorted(set(discovered), key=self._property_sort_key)
+            if pair not in self.props:
+                new_keys.add(pair)
+            self.props[pair] = value
+
+            if key not in self._h15_poll_keys:
+                self._h15_poll_keys.append(key)
+
+        self._h15_poll_keys.sort(key=self._property_sort_key)
+        return new_keys
+
+    async def _async_discover_h15_properties(self) -> None:
+        """Discover every cloud-cached property exposed by the H15 profile."""
+        if self._h15_discovery_done:
+            return
+
+        values = await self._get_status_props_chunked(self._all_h15_scan_keys())
+        usable = {key: value for key, value in values.items() if value is not None}
+        new_keys = self._apply_h15_values(usable)
+
+        self._h15_mapping_snapshot = dict(usable)
+        self._h15_last_changes = {}
+        self._h15_last_scan = datetime.now(timezone.utc)
         self._h15_discovery_done = True
 
+        if new_keys and self.new_prop_callback:
+            self.new_prop_callback(new_keys)
+
         _LOGGER.info(
-            "H15 Pro Heat profile discovered %d properties for model=%s",
-            len(self._h15_poll_keys),
+            "H15 Pro Heat baseline discovered %d properties for model=%s",
+            len(self._h15_mapping_snapshot),
             self._model,
         )
 
+    async def async_refresh_h15_mapping(self) -> dict[str, dict[str, Any]]:
+        """Run a fresh full H15 scan and compare it with the previous mapping snapshot.
+
+        This is a diagnostic read-only operation. It never writes to the vacuum.
+        Use it after changing one physical/app setting to identify which raw
+        properties changed.
+        """
+        if not self._is_h15:
+            return {}
+
+        values = await self._get_status_props_chunked(self._all_h15_scan_keys())
+        usable = {key: value for key, value in values.items() if value is not None}
+
+        if not self._h15_mapping_snapshot:
+            self._h15_mapping_snapshot = dict(usable)
+
+        changes: dict[str, dict[str, Any]] = {}
+        for key, new_value in usable.items():
+            if key not in self._h15_mapping_snapshot:
+                changes[key] = {
+                    "old": "<new>",
+                    "new": new_value,
+                }
+                continue
+
+            old_value = self._h15_mapping_snapshot[key]
+            if old_value != new_value:
+                changes[key] = {
+                    "old": old_value,
+                    "new": new_value,
+                }
+
+        new_keys = self._apply_h15_values(usable)
+
+        # Keep the prior value for properties omitted from a particular response;
+        # only returned properties update the mapping baseline.
+        self._h15_mapping_snapshot.update(usable)
+        self._h15_last_changes = changes
+        self._h15_last_scan = datetime.now(timezone.utc)
+
+        if new_keys and self.new_prop_callback:
+            self.new_prop_callback(new_keys)
+
+        self.async_set_updated_data(self._build_data())
+
+        if changes:
+            lines = [
+                f"{key}: {change['old']!r} -> {change['new']!r}"
+                for key, change in sorted(
+                    changes.items(),
+                    key=lambda item: self._property_sort_key(item[0]),
+                )
+            ]
+            _LOGGER.info(
+                "H15 mapping scan detected %d change(s):\n%s",
+                len(changes),
+                "\n".join(lines),
+            )
+        else:
+            _LOGGER.info("H15 mapping scan detected no property changes")
+
+        return changes
+
     async def _async_poll_h15_properties(self) -> None:
-        """Refresh all properties discovered for the H15."""
+        """Refresh all properties already discovered for the H15."""
         if not self._h15_discovery_done:
             await self._async_discover_h15_properties()
             return
@@ -263,14 +360,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         values = await self._get_status_props_chunked(self._h15_poll_keys)
-        for key, value in values.items():
-            if value is None:
-                continue
-            try:
-                siid_text, piid_text = key.split(".", 1)
-                self.props[(int(siid_text), int(piid_text))] = value
-            except (TypeError, ValueError):
-                continue
+        self._apply_h15_values(values)
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Refresh cloud snapshot and cached properties."""
