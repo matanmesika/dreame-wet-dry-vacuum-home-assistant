@@ -1,6 +1,7 @@
-"""Sensor platform for Dreame wet & dry vacuum (dynamic, MQTT-driven)."""
+"""Sensor platform for Dreame wet & dry vacuum."""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -22,6 +23,7 @@ from .const import (
 )
 from .coordinator import DreameWetDryCoordinator
 from .entity import build_device_info
+from .profiles import H15_PROPERTY_META
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,16 +45,19 @@ async def async_setup_entry(
     entry: DreameWetDryConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    """Set up sensor entities."""
     coordinator: DreameWetDryCoordinator = entry.runtime_data
+
+    if coordinator.is_h15_pro_heat:
+        _setup_h15_sensors(coordinator, async_add_entities)
+        return
+
     added: set[tuple[int, int]] = set()
 
     @callback
     def _add_new(keys: set[tuple[int, int]]) -> None:
         entities = []
         for key in keys:
-            # Only create sensors for *recognised* properties. Props handled by
-            # another platform (switch/number/select/button) or not yet identified
-            # are intentionally not turned into generic "Propriété X.Y" sensors.
             if key in added or key not in KNOWN_MQTT_PROPS:
                 continue
             added.add(key)
@@ -63,19 +68,148 @@ async def async_setup_entry(
     coordinator.new_prop_callback = _add_new
     _add_new(set(KNOWN_MQTT_PROPS))
 
-    # Consumable life sensors: state = hours remaining (left / 60, no constant),
-    # with percent + minutes as attributes.
     async_add_entities(
-        DreameWetDryConsumableSensor(coordinator, meta) for meta in CONSUMABLE_SENSORS
+        DreameWetDryConsumableSensor(coordinator, meta)
+        for meta in CONSUMABLE_SENSORS
     )
 
 
-class DreameWetDrySensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntity):
-    """One sensor per (siid, piid) property."""
+def _setup_h15_sensors(
+    coordinator: DreameWetDryCoordinator,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Expose every property discovered from the H15 as a safe read-only sensor."""
+    added: set[tuple[int, int]] = set()
+
+    @callback
+    def _add_new(keys: set[tuple[int, int]]) -> None:
+        entities: list[SensorEntity] = []
+        for key in sorted(keys):
+            if key in added:
+                continue
+            added.add(key)
+            entities.append(DreameH15PropertySensor(coordinator, key))
+        if entities:
+            async_add_entities(entities)
+
+    coordinator.new_prop_callback = _add_new
+    _add_new(set(coordinator.props))
+
+    _LOGGER.info(
+        "Created %d H15 Pro Heat property sensors for model=%s",
+        len(added),
+        coordinator.model,
+    )
+
+
+class DreameH15PropertySensor(
+    CoordinatorEntity[DreameWetDryCoordinator], SensorEntity
+):
+    """Read-only H15 property sensor.
+
+    Confirmed/candidate names come from the model profile. Anything not mapped
+    remains a Raw SIID.PIID sensor instead of inheriting H14 semantics.
+    """
 
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: DreameWetDryCoordinator, key: tuple[int, int]) -> None:
+    def __init__(
+        self,
+        coordinator: DreameWetDryCoordinator,
+        key: tuple[int, int],
+    ) -> None:
+        super().__init__(coordinator)
+        self._key = key
+        self._data_key = f"{key[0]}.{key[1]}"
+        self._meta = H15_PROPERTY_META.get(key, {})
+
+        # H15-specific IDs prevent old H14 sensor semantics from being reused.
+        self._attr_unique_id = (
+            f"{coordinator.device_id}_h15_property_{key[0]}_{key[1]}"
+        )
+        self._attr_name = self._meta.get("name", f"Raw {self._data_key}")
+        self._attr_icon = self._meta.get("icon", "mdi:code-tags")
+        self._attr_device_info = build_device_info(coordinator)
+
+        if self._meta.get("diagnostic", True):
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+        device_class = self._meta.get("device_class")
+        if device_class == "battery":
+            self._attr_device_class = SensorDeviceClass.BATTERY
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        elif device_class == "duration":
+            self._attr_device_class = SensorDeviceClass.DURATION
+
+        state_class = self._meta.get("state_class")
+        if state_class == "measurement":
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        elif state_class == "total_increasing":
+            self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+        if unit := self._meta.get("unit"):
+            self._attr_native_unit_of_measurement = unit
+
+    @property
+    def native_value(self) -> Any:
+        raw = self.coordinator.data.get(self._data_key)
+        if raw is None:
+            return None
+
+        # Lists/dicts are valid raw Dreame values, but HA sensor state itself
+        # must be scalar. Preserve the exact value in raw_value attributes.
+        if isinstance(raw, (list, dict, tuple)):
+            return json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+
+        return raw
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        raw = self.coordinator.data.get(self._data_key)
+        attrs: dict[str, Any] = {
+            "model": self.coordinator.model,
+            "siid": self._key[0],
+            "piid": self._key[1],
+            "property": self._data_key,
+            "mapping_status": self._meta.get("confidence", "unmapped"),
+            "raw_value": raw,
+        }
+
+        if note := self._meta.get("note"):
+            attrs["mapping_note"] = note
+
+        if self._meta.get("bitfield") and raw is not None:
+            try:
+                value = int(raw)
+                attrs["active_bits"] = [
+                    1 << bit for bit in range(32) if value & (1 << bit)
+                ]
+            except (TypeError, ValueError):
+                pass
+
+        if self._meta.get("remaining_time") and raw is not None:
+            try:
+                minutes = int(raw)
+                if minutes >= 0:
+                    attrs["hours_remaining"] = round(minutes / 60, 1)
+            except (TypeError, ValueError):
+                pass
+
+        return attrs
+
+
+class DreameWetDrySensor(
+    CoordinatorEntity[DreameWetDryCoordinator], SensorEntity
+):
+    """One legacy/H14 sensor per (siid, piid) property."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: DreameWetDryCoordinator,
+        key: tuple[int, int],
+    ) -> None:
         super().__init__(coordinator)
         self._key = key
         self._data_key = f"{key[0]}.{key[1]}"
@@ -90,6 +224,7 @@ class DreameWetDrySensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntit
         self._attr_unique_id = f"{coordinator.device_id}_{self._data_key}"
         self._attr_translation_key = meta["key"]
         self._attr_icon = meta.get("icon")
+
         if dc := _DEVICE_CLASSES.get(meta.get("device_class")):
             self._attr_device_class = dc
         if sc := _STATE_CLASSES.get(meta.get("state_class")):
@@ -126,7 +261,6 @@ class DreameWetDrySensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntit
                 return DEVICE_STATUS.get(int(raw), str(raw))
             except (ValueError, TypeError):
                 return str(raw)
-        # Lists we don't reduce: present as string to stay valid
         if isinstance(raw, list):
             return ", ".join(str(x) for x in raw)
         return raw
@@ -140,19 +274,21 @@ class DreameWetDrySensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntit
         if self._is_bitmask and raw is not None:
             try:
                 ival = int(raw)
-                bits = [b for b in range(32) if ival & (1 << b)]
-                attrs["active_bits"] = [1 << b for b in bits]
+                bits = [bit for bit in range(32) if ival & (1 << bit)]
+                attrs["active_bits"] = [1 << bit for bit in bits]
                 if self._decode and self._decode in _DECODE_TABLES:
-                    attrs["alerts"] = decode_field_alerts(ival, _DECODE_TABLES[self._decode])
+                    attrs["alerts"] = decode_field_alerts(
+                        ival, _DECODE_TABLES[self._decode]
+                    )
             except (ValueError, TypeError):
                 pass
         return attrs
 
 
-class DreameWetDryConsumableSensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntity):
-    """Consumable remaining life. State = hours remaining (minutes / 60, no
-    constant). Percentage is exposed as an attribute, using the device's `max`
-    property when available, otherwise the documented full-life fallback."""
+class DreameWetDryConsumableSensor(
+    CoordinatorEntity[DreameWetDryCoordinator], SensorEntity
+):
+    """Legacy/H14 consumable remaining-life sensor."""
 
     _attr_has_entity_name = True
     _attr_native_unit_of_measurement = "h"
@@ -163,7 +299,9 @@ class DreameWetDryConsumableSensor(CoordinatorEntity[DreameWetDryCoordinator], S
         self._left_key = meta["left"]
         self._max_key = meta["max"]
         self._full_life_min = meta["full_life_min"]
-        self._attr_unique_id = f"{coordinator.device_id}_consumable_{meta['key']}"
+        self._attr_unique_id = (
+            f"{coordinator.device_id}_consumable_{meta['key']}"
+        )
         self._attr_translation_key = f"consumable_{meta['key']}"
         self._attr_icon = meta.get("icon")
         self._attr_device_info = build_device_info(coordinator)
@@ -184,19 +322,24 @@ class DreameWetDryConsumableSensor(CoordinatorEntity[DreameWetDryCoordinator], S
         left = self._left_minutes()
         if left is None:
             return {}
+
         raw_max = self.coordinator.data.get(self._max_key)
         try:
             full = int(raw_max)
         except (ValueError, TypeError):
             full = -1
+
         from_device = full > 0
         if not from_device:
             full = self._full_life_min
+
         attrs: dict[str, Any] = {
             "minutes_remaining": left,
             "full_life_hours": round(full / 60, 1),
             "full_life_source": "device" if from_device else "default (60 h)",
         }
         if full > 0:
-            attrs["percent_remaining"] = max(0, min(100, round(left / full * 100)))
+            attrs["percent_remaining"] = max(
+                0, min(100, round(left / full * 100))
+            )
         return attrs
