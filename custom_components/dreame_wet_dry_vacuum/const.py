@@ -43,8 +43,8 @@ DEVICE_STATUS = {
     13: "OTA upgrade",
     14: "Voice package upgrade",
     15: "Charging complete",
-    # 16-22 : "Lavage en cours" dans le dictionnaire officiel, mais chaque code
-    # correspond en réalité à un MODE de nettoyage distinct (confirmé par l'utilisateur).
+    # Codes 16-22 are all labelled as washing in the original dictionary,
+    # while observed values distinguish specific operating modes.
     16: "Washing — Auto mode",
     17: "Washing — Ultra mode",
     18: "Washing — Suction mode",
@@ -98,7 +98,7 @@ PROP_STATUS = (2, 1)  # device status (matches latestStatus)
 # Names are kept in English in source; UI localization is handled by translations.
 # Dreame's SIID/PIID mapping is authoritative; see debug/dumps/DECODED_SPEC.md.
 # "name" is a source-code fallback; UI names use translation_key = "key"
-# (section "entity" de translations/en.json et fr.json).
+# (the "entity" section of translations/en.json and other locale files).
 KNOWN_MQTT_PROPS: dict[tuple[int, int], dict] = {
     # --- Service principal (SIID 1) ---
     (2, 1): {"key": "status", "name": "Status", "enum": True, "icon": "mdi:robot-vacuum-variant"},
@@ -111,31 +111,29 @@ KNOWN_MQTT_PROPS: dict[tuple[int, int], dict] = {
     (1, 55): {"key": "start_time", "name": "Start time", "device_class": "timestamp", "timestamp": True, "icon": "mdi:clock-start", "diagnostic": True},
     (1, 56): {"key": "total_time_self_dry", "name": "Total self-dry time", "unit": "s", "device_class": "duration", "icon": "mdi:timer-sand", "diagnostic": True},
     (1, 57): {"key": "total_time_self_clean", "name": "Total self-clean time", "unit": "s", "device_class": "duration", "icon": "mdi:timer-sand", "diagnostic": True},
-    # Champs lus via l'API cleanLog (hors modèle Prop du plugin) — mapping empirique conservé
+    # Cleaning-history fields observed through the cloud API.
     (1, 47): {"key": "last_clean_time", "name": "Last clean", "device_class": "timestamp", "timestamp": True, "icon": "mdi:clock-check"},
     (1, 64): {"key": "last_clean_duration", "name": "Last clean duration", "unit": "s", "device_class": "duration", "icon": "mdi:timer"},
     (1, 49): {"key": "clean_count_2", "name": "Clean counter (alt.)", "icon": "mdi:counter", "state_class": "total_increasing", "diagnostic": True},
     (1, 68): {"key": "last_vacuum_duration", "name": "Last vacuum duration", "unit": "s", "device_class": "duration", "diagnostic": True},
     (1, 69): {"key": "last_mop_duration", "name": "Last mop duration", "unit": "s", "device_class": "duration", "diagnostic": True},
-    # --- Consommables : "vie restante" = MINUTES restantes (raw, diagnostic).
-    #     Les heures/% sont exposés par des capteurs dédiés (CONSUMABLE_SENSORS).
-    #     Les props "max" (x.6/x.2) ne sont jamais publiées par le cloud → non mappées.
+    # Consumable raw values are remaining minutes. Dedicated consumable sensors
+    # expose hours/percentage; optional "max" properties are handled separately.
     (6, 7): {"key": "front_brush_left", "name": "Front roller brush — minutes left", "unit": "min", "icon": "mdi:rotate-right", "diagnostic": True},
     (7, 7): {"key": "back_brush_left", "name": "Back roller brush — minutes left", "unit": "min", "icon": "mdi:rotate-right", "diagnostic": True},
     (19, 3): {"key": "filter_left", "name": "Filter — minutes left", "unit": "min", "icon": "mdi:air-filter", "diagnostic": True},
-    # Jamais rapportés à ce jour (sac à poussière, brosse/filtre d'aspiration) — gardés bruts au cas où.
+    # Rare/optional consumables retained for devices that publish them.
     (20, 3): {"key": "dustbag_left", "name": "Dust bag — minutes left", "unit": "min", "icon": "mdi:sack", "diagnostic": True},
     (21, 7): {"key": "suck_brush_left", "name": "Suction brush — minutes left", "unit": "min", "icon": "mdi:rotate-right", "diagnostic": True},
     (22, 7): {"key": "suck_filter_left", "name": "Suction filter — minutes left", "unit": "min", "icon": "mdi:air-filter", "diagnostic": True},
-    # --- Réglages reflétés en lecture (aussi exposés comme contrôles, voir plus bas) ---
+    # Settings also exposed as writable controls below.
     (16, 3): {"key": "elec_water", "name": "Electrolysis / detergent", "icon": "mdi:flash", "diagnostic": True},
     (1, 67): {"key": "detergent_fav", "name": "Detergent preference", "icon": "mdi:bottle-tonic-plus", "diagnostic": True},
-    # --- Alertes / défauts (SIID 4, noms du plugin : warn/error/warnPush) ---
+    # Warning/error properties (SIID 4).
     (4, 1): {"key": "warn", "name": "Warnings", "icon": "mdi:alert", "bitmask": True, "decode": "warn", "diagnostic": True},
     (4, 2): {"key": "error", "name": "Error codes", "icon": "mdi:alert-circle", "bitmask": True, "decode": "error", "diagnostic": True},
     (4, 3): {"key": "warn_push", "name": "Push notification (raw)", "icon": "mdi:bell-alert", "bitmask": True, "diagnostic": True},
-    # --- Niveau d'eau / aspiration : non modélisés par le plugin sous SIID 4,
-    #     mapping empirique conservé (vu en capture live) ---
+    # Water/suction properties observed in live device data.
     (4, 5): {"key": "water_level_set", "name": "Water level (setting)", "unit": "%", "list_scalar": True, "icon": "mdi:water-percent"},
     (4, 6): {"key": "water_level", "name": "Water level", "unit": "%", "icon": "mdi:water"},
     (4, 7): {"key": "suction_mode", "name": "Suction mode", "list_scalar": True, "icon": "mdi:fan"},
@@ -221,7 +219,7 @@ ALERT_BINARY_SENSORS: list[dict] = [
 # Binary properties: (siid, piid): meta.
 #   bit_mask=N  -> on when (value & N) != 0 (instead of value != 0)
 KNOWN_BINARY_PROPS: dict[tuple[int, int], dict] = {
-    # Confirmé par test isolé : 17.8 = ajout auto de détergent (1=activé, 0=désactivé)
+    # 17.8 = automatic detergent state (1=enabled, 0=disabled).
     (17, 8): {"key": "auto_detergent_17", "name": "Auto detergent (sensor)", "icon": "mdi:bottle-tonic-plus", "diagnostic": True},
 }
 
