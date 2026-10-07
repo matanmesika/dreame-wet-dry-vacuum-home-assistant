@@ -74,6 +74,22 @@ async def async_setup_entry(
     )
 
 
+def _decode_h15_mechanical_arm_2449(raw: Any) -> list[str]:
+    """Decode w2449e lifting-arm inverted mode bits from Dreame app logic."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return []
+
+    modes = (
+        (0, "Smart"),
+        (3, "Hot Water"),
+        (2, "Suction"),
+        (4, "Custom"),
+    )
+    return [name for bit, name in modes if ((value >> bit) & 1) == 0]
+
+
 def _setup_h15_sensors(
     coordinator: DreameWetDryCoordinator,
     async_add_entities: AddEntitiesCallback,
@@ -203,6 +219,12 @@ class DreameH15PropertySensor(
                 return str(raw)
             return value_map.get(numeric, f"Unknown ({raw})")
 
+        if self._meta.get("decoder") == "mechanical_arm_2449":
+            modes = _decode_h15_mechanical_arm_2449(raw)
+            if len(modes) == 4:
+                return "All modes"
+            return ", ".join(modes) if modes else "None"
+
         return raw
 
     @property
@@ -224,6 +246,15 @@ class DreameH15PropertySensor(
         if isinstance(value_map, dict):
             attrs["known_values"] = {
                 str(key): value for key, value in value_map.items()
+            }
+
+        if self._meta.get("decoder") == "mechanical_arm_2449" and raw is not None:
+            attrs["selected_modes"] = _decode_h15_mechanical_arm_2449(raw)
+            attrs["bit_semantics"] = {
+                "0": "Smart selected when bit=0",
+                "3": "Hot Water selected when bit=0",
+                "2": "Suction selected when bit=0",
+                "4": "Custom selected when bit=0",
             }
 
         if self._meta.get("bitfield") and raw is not None:
