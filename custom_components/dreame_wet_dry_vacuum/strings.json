@@ -8,7 +8,7 @@
           "username": "Email",
           "password": "Password",
           "region": "Cloud server",
-          "country": "Country code"
+          "country": "Country"
         }
       },
       "device": {
