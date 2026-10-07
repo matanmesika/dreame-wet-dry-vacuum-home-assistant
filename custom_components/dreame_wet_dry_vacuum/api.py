@@ -54,9 +54,9 @@ def _parse_prop_value(value: Any) -> Any:
     return value
 
 
-def _compute_rlc(region: str = "eu") -> str:
+def _compute_rlc(region: str = "eu", country: str = "DE") -> str:
     """Generate the dreame-rlc header value via AES-128-ECB."""
-    plain = f"{region}|en|DE"
+    plain = f"{region}|en|{country.upper()}"
     key = DREAME_RLC_KEY
     cipher = AES.new(key, AES.MODE_ECB)
     # Pad to 16-byte block
@@ -86,17 +86,19 @@ class DreameAPI:
         username: str,
         password: str,
         region: str = "eu",
+        country: str = "DE",
         session: aiohttp.ClientSession | None = None,
     ) -> None:
         self._username = username
         self._password = password
         self._region = region
+        self._country = country.upper()
         self._base_url = REGION_URLS.get(region, EU_BASE_URL)
         self._access_token: str | None = None
         self._uid: str | None = None
         self._session = session
         self._owns_session = session is None
-        self._rlc = _compute_rlc(region)
+        self._rlc = _compute_rlc(region, self._country)
 
     @property
     def uid(self) -> str | None:
@@ -149,7 +151,7 @@ class DreameAPI:
             "type": "account",
             "username": self._username,
             "password": _md5_password(self._password),
-            "country": "DE",
+            "country": self._country,
             "lang": "en",
         }
 
@@ -218,6 +220,24 @@ class DreameAPI:
         records = (data.get("page") or {}).get("records") or []
         if not records:
             records = data.get("records") or []
+
+        if records:
+            _LOGGER.debug(
+                "Dreame device discovery returned %d device(s) for region=%s country=%s; models=%s",
+                len(records),
+                self._region,
+                self._country,
+                [record.get("model", "unknown") for record in records],
+            )
+        else:
+            _LOGGER.warning(
+                "Dreame device discovery returned no devices for region=%s country=%s; "
+                "response keys=%s data keys=%s",
+                self._region,
+                self._country,
+                sorted(result.keys()),
+                sorted(data.keys()) if isinstance(data, dict) else [],
+            )
         return records
 
     async def get_device_snapshot(self, device_id: str) -> dict[str, Any]:
