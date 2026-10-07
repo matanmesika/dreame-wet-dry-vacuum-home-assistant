@@ -106,6 +106,21 @@ class TestLogin:
         assert seen["data"]["country"] == "IL"
         assert seen["headers"]["dreame-rlc"] == _compute_rlc("eu", "IL")
 
+    def test_region_selects_matching_cloud_host(self):
+        seen = {}
+
+        def handler(url, kw):
+            seen["url"] = url
+            return FakeResponse(200, TOKEN_OK)
+
+        api = DreameAPI("user", "pw", region="us", country="US", session=FakeSession(handler))
+        run(api.login())
+        assert seen["url"].startswith("https://us.iot.dreame.tech:13267/")
+
+    def test_unknown_region_is_rejected(self):
+        with pytest.raises(ValueError):
+            DreameAPI("user", "pw", region="unknown", session=FakeSession(lambda u, k: FakeResponse(200, TOKEN_OK)))
+
     def test_login_rejected_raises_auth_error(self):
         session = FakeSession(
             lambda url, kw: FakeResponse(401, {"error": "unauthorized"})
