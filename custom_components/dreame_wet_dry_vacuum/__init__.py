@@ -17,7 +17,7 @@ from .coordinator import DreameWetDryCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 _H15_ENTITY_SCHEMA_KEY = "_h15_entity_schema"
-_H15_ENTITY_SCHEMA_VERSION = 1
+_H15_ENTITY_SCHEMA_VERSION = 2
 
 PLATFORMS = [
     Platform.SENSOR,
