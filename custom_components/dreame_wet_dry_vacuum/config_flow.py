@@ -7,6 +7,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import CountrySelector
 
 from .api import DreameAPI, DreameAuthError, DreameAPIError
 from .const import CONF_COUNTRY, CONF_DEVICE_ID, CONF_REGION, DOMAIN, REGIONS
@@ -18,10 +19,7 @@ def _user_schema(default_country: str) -> vol.Schema:
             vol.Required(CONF_USERNAME): str,
             vol.Required(CONF_PASSWORD): str,
             vol.Required(CONF_REGION, default="auto"): vol.In(REGIONS),
-            vol.Required(CONF_COUNTRY, default=default_country): vol.All(
-                str,
-                vol.Match(r"^[A-Za-z]{2}$"),
-            ),
+            vol.Required(CONF_COUNTRY, default=default_country): CountrySelector(),
         }
     )
 
@@ -152,7 +150,7 @@ class DreameWetDryConfigFlow(ConfigFlow, domain=DOMAIN):
             api = self._api(
                 entry.data[CONF_USERNAME],
                 user_input[CONF_PASSWORD],
-                entry.data.get(CONF_REGION, "eu"),
+                entry.data.get(CONF_REGION, "auto"),
                 entry.data.get(CONF_COUNTRY, "DE"),
             )
             try:
