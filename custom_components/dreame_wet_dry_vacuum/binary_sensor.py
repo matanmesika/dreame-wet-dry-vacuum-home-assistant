@@ -28,6 +28,14 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: DreameWetDryCoordinator = entry.runtime_data
+
+    if coordinator.is_h15_pro_heat:
+        # Only the cloud connectivity state is model-independent. H14 alert
+        # bitmasks and charging/status semantics are not exposed on H15 until
+        # they are independently validated.
+        async_add_entities([DreameWetDryOnlineSensor(coordinator)])
+        return
+
     entities = [
         DreameWetDryOnlineSensor(coordinator),
         DreameWetDryChargingSensor(coordinator),
