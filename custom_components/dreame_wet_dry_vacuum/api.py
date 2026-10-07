@@ -270,6 +270,104 @@ class DreameAPI:
                 raise DreameAPIError(f"Request failed: {err}") from err
         raise DreameAPIError("Still unauthorized after re-login")
 
+    async def _authed_get(
+        self, url: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """GET with the existing Dreame bearer session."""
+        await self._ensure_logged_in()
+        session = await self._get_session()
+        for attempt in (1, 2):
+            try:
+                async with session.get(
+                    url,
+                    headers=self._get_auth_headers(),
+                    params=params or {},
+                    timeout=REQUEST_TIMEOUT,
+                ) as resp:
+                    if resp.status == 401 and attempt == 1:
+                        await self.login()
+                        continue
+                    if resp.status != 200:
+                        body = await resp.text()
+                        raise DreameAPIError(
+                            f"GET failed ({resp.status}): {body[:200]}"
+                        )
+                    return await resp.json(content_type=None)
+            except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+                raise DreameAPIError(f"GET request failed: {err}") from err
+        raise DreameAPIError("Still unauthorized after re-login")
+
+    async def get_device_info_full(self, device_id: str) -> dict[str, Any]:
+        """Return Dreame's full device/info payload for diagnostics."""
+        return await self._authed_post(
+            self._base_url + "/dreame-user-iot/iotuserbind/device/info",
+            {"did": str(device_id)},
+        )
+
+    async def get_dev_otc_info(self, device_id: str) -> dict[str, Any]:
+        """Return the app-facing devOTCInfo payload."""
+        return await self._authed_post(
+            self._base_url + "/dreame-user-iot/iotstatus/devOTCInfo",
+            {"did": str(device_id)},
+        )
+
+    async def get_device_data_probe(self, device_id: str) -> dict[str, Any]:
+        """Probe the app's device-data endpoint using the two known request forms."""
+        url = self._base_url + "/dreame-user-iot/iotuserdata/getDeviceData"
+        result: dict[str, Any] = {}
+        for name, payload in (
+            ("keys_empty", {"did": str(device_id), "keys": []}),
+            ("model_empty", {"did": str(device_id), "model": []}),
+        ):
+            try:
+                result[name] = await self._authed_post(url, payload)
+            except DreameAPIError as err:
+                result[name] = {"_error": str(err)}
+        return result
+
+    async def get_app_plugin_info(
+        self,
+        model: str,
+        app_versions: tuple[int, ...] = (150, 148),
+    ) -> dict[str, Any]:
+        """Query the Dreamehome per-model RN plugin metadata.
+
+        The Dreame app uses /dreame-product/upgrades/appplugin with the device
+        model and an app/plugin compatibility version. This method is read-only
+        and returns both attempts so we can see which version the backend accepts.
+        """
+        url = self._base_url + "/dreame-product/upgrades/appplugin"
+        attempts: dict[str, Any] = {}
+        for app_ver in app_versions:
+            try:
+                response = await self._authed_get(
+                    url,
+                    {
+                        "model": model,
+                        "appVer": app_ver,
+                        "os": 1,
+                    },
+                )
+                attempts[str(app_ver)] = response
+                data = response.get("data") if isinstance(response, dict) else None
+                if (
+                    isinstance(data, dict)
+                    and data.get("url")
+                    and int(data.get("version") or 0) > 0
+                ):
+                    return {
+                        "selected_app_version": app_ver,
+                        "selected": response,
+                        "attempts": attempts,
+                    }
+            except DreameAPIError as err:
+                attempts[str(app_ver)] = {"_error": str(err)}
+        return {
+            "selected_app_version": None,
+            "selected": None,
+            "attempts": attempts,
+        }
+
     @staticmethod
     def _extract_device_records(result: dict[str, Any]) -> list[dict[str, Any]]:
         """Extract device records from known Dreame device-list response shapes."""
