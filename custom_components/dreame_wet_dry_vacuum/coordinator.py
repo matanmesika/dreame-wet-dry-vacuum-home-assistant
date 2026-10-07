@@ -25,7 +25,7 @@ from .const import (
     STATUS_GROUP,
 )
 from .dreame_mqtt import DreameMqttClient
-from .profiles import is_h15_pro_heat
+from .profiles import H15_TARGETED_KEYS, is_h15_pro_heat
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,10 +46,20 @@ _POLL_KEYS: list[str] = sorted(
     | set(CONSUMABLE_MAX_KEYS)
 )
 
-# Broad H15 scan used for first discovery and manual mapping snapshots.
-_H15_SIID_RANGE = range(1, 31)
-_H15_PIID_RANGE = range(1, 81)
+# Expanded H15 discovery.
+#
+# The first mapping build and the explicit "Refresh mapping snapshot" button
+# scan these ranges only. The normal 5-minute poll reads only properties that
+# were actually discovered, so this does not create a permanent large poll.
+#
+# The Dreame common plugin defines services through at least SIID 26 and also
+# contains SIID 100 (DeviceControl), so we deliberately include 1..40 + 100.
+# PIID 120 covers the newly found H15 properties above the previous PIID-80
+# limit (for example 1.81, 1.82 and 1.83).
+_H15_SCAN_SIIDS: tuple[int, ...] = tuple(range(1, 41)) + (100,)
+_H15_PIID_RANGE = range(1, 121)
 _H15_DISCOVERY_CHUNK = 100
+_H15_DIRECT_CHUNK = 50
 
 
 class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -84,7 +94,6 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._h15_discovery_done = False
         self._h15_poll_keys: list[str] = []
 
-        # Mapping baseline and result from the last explicit H15 mapping scan.
         self._h15_mapping_snapshot: dict[str, Any] = {}
         self._h15_last_changes: dict[str, dict[str, Any]] = {}
         self._h15_last_scan: datetime | None = None
@@ -197,7 +206,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _all_h15_scan_keys() -> list[str]:
         return [
             f"{siid}.{piid}"
-            for siid in _H15_SIID_RANGE
+            for siid in _H15_SCAN_SIIDS
             for piid in _H15_PIID_RANGE
         ]
 
@@ -208,8 +217,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for (siid, piid), value in self.props.items()
         }
 
-        # Do not apply H14 status decoding to the H15 while its enum is being
-        # remapped from the actual w2449e device.
+        # Never apply the inherited H14 status-group table to H15.
         if not self._is_h15:
             status = self.props.get((2, 1))
             if status is not None:
@@ -226,7 +234,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         *,
         chunk_size: int = _H15_DISCOVERY_CHUNK,
     ) -> dict[str, Any]:
-        """Read status properties in bounded chunks."""
+        """Read cloud-cached status properties in bounded chunks."""
         result: dict[str, Any] = {}
         for start in range(0, len(keys), chunk_size):
             chunk = keys[start : start + chunk_size]
@@ -240,6 +248,50 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if isinstance(values, dict):
                 result.update(values)
         return result
+
+    async def _get_h15_targeted_live_props(self) -> dict[str, Any]:
+        """Try direct read-only get_properties for app-known H15 keys.
+
+        The cloud cache is the primary source on this model. Direct RPC often
+        returns null while the unit sleeps, but it can expose extra settings
+        while the vacuum is awake. Only successful, non-null results are merged.
+        """
+        props = [{"siid": s, "piid": p} for s, p in H15_TARGETED_KEYS]
+        result: dict[str, Any] = {}
+
+        for start in range(0, len(props), _H15_DIRECT_CHUNK):
+            chunk = props[start : start + _H15_DIRECT_CHUNK]
+            try:
+                rows = await self.api.get_properties(self.device_id, chunk)
+            except DreameAuthError:
+                raise
+            except (DreameAPIError, ValueError) as err:
+                _LOGGER.debug("H15 direct get_properties failed (non-fatal): %s", err)
+                continue
+
+            for item in rows or []:
+                try:
+                    if int(item.get("code", -1)) != 0:
+                        continue
+                    value = item.get("value")
+                    if value is None:
+                        continue
+                    key = f"{int(item['siid'])}.{int(item['piid'])}"
+                except (KeyError, TypeError, ValueError):
+                    continue
+                result[key] = value
+
+        return result
+
+    async def _read_full_h15_profile(self) -> dict[str, Any]:
+        """Read the expanded H15 profile from cache plus targeted live RPC."""
+        cached = await self._get_status_props_chunked(self._all_h15_scan_keys())
+        usable = {key: value for key, value in cached.items() if value is not None}
+
+        # Prefer a successful live value over an older cached value.
+        live = await self._get_h15_targeted_live_props()
+        usable.update(live)
+        return usable
 
     def _apply_h15_values(self, values: dict[str, Any]) -> set[tuple[int, int]]:
         """Apply returned H15 values and return newly discovered property keys."""
@@ -265,12 +317,11 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return new_keys
 
     async def _async_discover_h15_properties(self) -> None:
-        """Discover every cloud-cached property exposed by the H15 profile."""
+        """Discover all readable properties in the expanded H15 profile."""
         if self._h15_discovery_done:
             return
 
-        values = await self._get_status_props_chunked(self._all_h15_scan_keys())
-        usable = {key: value for key, value in values.items() if value is not None}
+        usable = await self._read_full_h15_profile()
         new_keys = self._apply_h15_values(usable)
 
         self._h15_mapping_snapshot = dict(usable)
@@ -282,23 +333,21 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.new_prop_callback(new_keys)
 
         _LOGGER.info(
-            "H15 Pro Heat baseline discovered %d properties for model=%s",
+            "H15 Pro Heat baseline discovered %d properties for model=%s "
+            "(scan SIIDs 1-40 + 100, PIIDs 1-120)",
             len(self._h15_mapping_snapshot),
             self._model,
         )
 
     async def async_refresh_h15_mapping(self) -> dict[str, dict[str, Any]]:
-        """Run a fresh full H15 scan and compare it with the previous mapping snapshot.
+        """Run a fresh expanded H15 scan and compare with the previous snapshot.
 
-        This is a diagnostic read-only operation. It never writes to the vacuum.
-        Use it after changing one physical/app setting to identify which raw
-        properties changed.
+        This operation is read-only and never writes to the vacuum.
         """
         if not self._is_h15:
             return {}
 
-        values = await self._get_status_props_chunked(self._all_h15_scan_keys())
-        usable = {key: value for key, value in values.items() if value is not None}
+        usable = await self._read_full_h15_profile()
 
         if not self._h15_mapping_snapshot:
             self._h15_mapping_snapshot = dict(usable)
@@ -306,23 +355,15 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         changes: dict[str, dict[str, Any]] = {}
         for key, new_value in usable.items():
             if key not in self._h15_mapping_snapshot:
-                changes[key] = {
-                    "old": "<new>",
-                    "new": new_value,
-                }
+                changes[key] = {"old": "<new>", "new": new_value}
                 continue
 
             old_value = self._h15_mapping_snapshot[key]
             if old_value != new_value:
-                changes[key] = {
-                    "old": old_value,
-                    "new": new_value,
-                }
+                changes[key] = {"old": old_value, "new": new_value}
 
         new_keys = self._apply_h15_values(usable)
 
-        # Keep the prior value for properties omitted from a particular response;
-        # only returned properties update the mapping baseline.
         self._h15_mapping_snapshot.update(usable)
         self._h15_last_changes = changes
         self._h15_last_scan = datetime.now(timezone.utc)
@@ -351,7 +392,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return changes
 
     async def _async_poll_h15_properties(self) -> None:
-        """Refresh all properties already discovered for the H15."""
+        """Refresh only properties already discovered for the H15."""
         if not self._h15_discovery_done:
             await self._async_discover_h15_properties()
             return
