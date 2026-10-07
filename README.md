@@ -83,7 +83,7 @@ Once this repository is published to the [HACS default store](https://hacs.xyz/d
 
 1. Go to **Settings → Devices & Services → Add Integration**.
 2. Search for **Dreame Wet & Dry Vacuum**.
-3. Enter your **Dreame account email**, **password**, and two-letter **country code**. The country defaults to the country configured in Home Assistant.
+3. Enter your **Dreame account email**, **password**, and **country**. The country field uses Home Assistant's full country selector and defaults to the country configured in Home Assistant.
 4. Leave **Cloud server** on **Automatic** unless you need to override it manually.
 5. If your account has more than one device, pick the vacuum you want to add.
 
