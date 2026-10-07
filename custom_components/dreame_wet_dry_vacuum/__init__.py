@@ -7,6 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DreameAPI, DreameAPIError, DreameAuthError
@@ -14,6 +15,9 @@ from .const import CONF_COUNTRY, CONF_DEVICE_ID, CONF_REGION
 from .coordinator import DreameWetDryCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+_H15_ENTITY_SCHEMA_KEY = "_h15_entity_schema"
+_H15_ENTITY_SCHEMA_VERSION = 1
 
 PLATFORMS = [
     Platform.SENSOR,
@@ -71,6 +75,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: DreameWetDryConfigEntry)
 
     # Raises ConfigEntryNotReady / ConfigEntryAuthFailed on failure
     await coordinator.async_config_entry_first_refresh()
+
+    # One-time cleanup when an existing H15 entry moves from the inherited H14
+    # entity layout to the model-specific H15 profile. This removes stale
+    # restored H14 sensors/controls so only entities from the H15 profile are
+    # recreated below. The schema flag prevents repeated deletion on restarts.
+    if (
+        coordinator.is_h15_pro_heat
+        and entry.data.get(_H15_ENTITY_SCHEMA_KEY, 0) < _H15_ENTITY_SCHEMA_VERSION
+    ):
+        registry = er.async_get(hass)
+        stale_entries = er.async_entries_for_config_entry(registry, entry.entry_id)
+        for stale_entry in stale_entries:
+            registry.async_remove(stale_entry.entity_id)
+
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                _H15_ENTITY_SCHEMA_KEY: _H15_ENTITY_SCHEMA_VERSION,
+            },
+        )
+        _LOGGER.info(
+            "Migrated H15 Pro Heat entity registry to schema version %d",
+            _H15_ENTITY_SCHEMA_VERSION,
+        )
 
     entry.runtime_data = coordinator
     coordinator.start_polling()
