@@ -287,6 +287,7 @@ CONF_COUNTRY = "country"
 CONF_DEVICE_ID = "device_id"
 
 REGIONS = {
+    "auto": "Automatic",
     "eu": "Europe",
     "de": "Germany / Europe",
     "cn": "China",
