@@ -95,11 +95,46 @@ The integration creates one device with all of its entities. State is updated in
 
 ### H15 Pro Heat validation profile
 
-The branch also contains a conservative profile for the **Dreame H15 Pro Heat** model `dreame.hold.w2449e`.
+This branch contains an active validation profile for the **Dreame H15 Pro Heat**
+model `dreame.hold.w2449e`.
 
-For this model the integration performs a broad initial SIID/PIID discovery and exposes every property actually returned by the device as a read-only sensor. Confirmed H15 properties use meaningful names, candidate mappings are explicitly marked, and unknown properties stay as `Raw <siid.piid>` instead of inheriting H14 meanings.
+The profile is based on two sources: properties observed from the real H15 through
+Dreame cloud/MQTT, and the Dreamehome app packages returned by the account for this
+model (common plugin **728** plus H15 resource package **7**). Mappings are marked
+as confirmed, plugin-derived, candidate, or unmapped so H14 assumptions are not
+silently reused.
 
-Until H15 write semantics are validated, H14-specific switches, numbers, selects, buttons, alert bit mappings, and charging-state decoding are intentionally not created for `w2449e`. Existing H15 entries are migrated once to remove stale restored H14 entities.
+For H15 the coordinator now:
+
+- scans **SIID 1-40 plus SIID 100 / PIID 1-120** during initial mapping discovery;
+- performs targeted read-only `get_properties` requests for app-defined keys that
+  may be absent from the cloud cache;
+- exposes every property actually returned by the device as a read-only sensor;
+- decodes known H15 enums while preserving the exact raw value in entity attributes;
+- keeps unknown properties as `Raw <siid.piid>`;
+- refreshes only discovered properties during the normal five-minute safety poll;
+- accepts new MQTT properties dynamically without a restart.
+
+Current H15 mappings include battery and work mode, self-clean/dry settings and
+scheduled wash/dry properties, voice volume/language identifiers, roller/filter
+remaining life, personalized suction/water/cleaning/hot-water modes, GlideWheel
+traction, lifting robotic-arm mode bits, and smart drying/moisture settings.
+
+Two diagnostic buttons are available on H15:
+
+- **Refresh mapping snapshot** — performs a fresh read-only scan and reports exact
+  old/new property changes through the **Mapping changes** diagnostic sensor.
+- **Export Dreame app metadata** — downloads the app plugin/resource package and
+  writes a privacy-redacted `metadata_share.json` under
+  `/config/dreame_h15_probe/` for mapping analysis.
+
+Unverified H14 writable controls and H14 alert/charging decoding remain suppressed
+on H15. The current H15 validation profile is intentionally read-only apart from
+the diagnostic export/refresh operations; no arbitrary property writes are used
+for reverse engineering.
+
+Properties that still have no verified H15 meaning remain visible as raw
+diagnostics so they can be identified with controlled one-setting-at-a-time tests.
 
 ---
 
