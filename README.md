@@ -93,6 +93,14 @@ The cloud server and account country are deliberately separate. Dreame accounts 
 
 The integration creates one device with all of its entities. State is updated in real time via MQTT, with a web poll every 5 minutes as a safety net.
 
+### H15 Pro Heat validation profile
+
+The branch also contains a conservative profile for the **Dreame H15 Pro Heat** model `dreame.hold.w2449e`.
+
+For this model the integration performs a broad initial SIID/PIID discovery and exposes every property actually returned by the device as a read-only sensor. Confirmed H15 properties use meaningful names, candidate mappings are explicitly marked, and unknown properties stay as `Raw <siid.piid>` instead of inheriting H14 meanings.
+
+Until H15 write semantics are validated, H14-specific switches, numbers, selects, buttons, alert bit mappings, and charging-state decoding are intentionally not created for `w2449e`. Existing H15 entries are migrated once to remove stale restored H14 entities.
+
 ---
 
 ## HACS compatibility — what's required & what's done
