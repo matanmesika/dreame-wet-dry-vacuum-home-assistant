@@ -83,11 +83,13 @@ Once this repository is published to the [HACS default store](https://hacs.xyz/d
 
 1. Go to **Settings → Devices & Services → Add Integration**.
 2. Search for **Dreame Wet & Dry Vacuum**.
-3. Enter your **Dreame account email**, **password**, **cloud server region**, and two-letter **country code**. The country code defaults to the country configured in Home Assistant (for example `IL` for Israel).
-4. Select the cloud server used by your Dreamehome account. Available server choices are Europe, Germany/Europe, China, United States, Russia, Taiwan, Singapore/Southeast Asia, India, International, and South Korea.
+3. Enter your **Dreame account email**, **password**, and two-letter **country code**. The country defaults to the country configured in Home Assistant.
+4. Leave **Cloud server** on **Automatic** unless you need to override it manually.
 5. If your account has more than one device, pick the vacuum you want to add.
 
-The cloud server and account country are deliberately separate. Dreame accounts can use a regional backend that does not match the literal ISO country code. For example, an Israel account can use country code `IL` while connecting through a European or International Dreame backend.
+In Automatic mode the integration performs one password login against a safe bootstrap backend selected from the account country (Europe for most countries). If Dreame returns the account's real `region` or `domain` in the login response, that backend is used immediately. If the first device-list query is empty, the integration probes the known regional device-list endpoints using the already-issued bearer token — it does **not** repeatedly submit the user's password to every server.
+
+The cloud server and account country are deliberately separate. Dreame accounts can use a regional backend that does not match the literal ISO country code. Manual choices remain available for troubleshooting.
 
 The integration creates one device with all of its entities. State is updated in real time via MQTT, with a web poll every 5 minutes as a safety net.
 
