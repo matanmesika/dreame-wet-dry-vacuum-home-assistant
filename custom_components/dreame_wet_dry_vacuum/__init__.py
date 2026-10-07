@@ -10,7 +10,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DreameAPI, DreameAPIError, DreameAuthError
-from .const import CONF_DEVICE_ID, CONF_REGION
+from .const import CONF_COUNTRY, CONF_DEVICE_ID, CONF_REGION
 from .coordinator import DreameWetDryCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DreameWetDryConfigEntry)
         username=entry.data[CONF_USERNAME],
         password=entry.data[CONF_PASSWORD],
         region=entry.data.get(CONF_REGION, "eu"),
+        country=entry.data.get(CONF_COUNTRY, "DE"),
         session=async_get_clientsession(hass),
     )
 
