@@ -15,7 +15,11 @@ from .const import (
     CONF_COUNTRY,
     CONF_DEVICE_ID,
     CONF_REGION,
+    H15_ALERT_BINARY_SENSORS,
     H15_CONTROL_KEYS,
+    H15_PRIMARY_ALERT_KEYS,
+    H15_PRIMARY_SELECT_KEYS,
+    H15_SELECT_SETTINGS,
     h15_sensor_is_optional,
 )
 from .coordinator import DreameWetDryCoordinator
@@ -33,6 +37,7 @@ PLATFORMS = [
     Platform.NUMBER,
     Platform.SELECT,
     Platform.BUTTON,
+    Platform.VACUUM,
 ]
 
 type DreameWetDryConfigEntry = ConfigEntry[DreameWetDryCoordinator]
@@ -77,6 +82,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: DreameWetDryConfigEntry)
 
     device_id = entry.data[CONF_DEVICE_ID]
     device_info = next((d for d in devices if str(d.get("did")) == str(device_id)), {})
+    if not device_info.get("model"):
+        try:
+            device_info = await api.get_device_record(device_id, devices)
+        except DreameAuthError as err:
+            raise ConfigEntryAuthFailed(f"Dreame credentials rejected: {err}") from err
+        except DreameAPIError as err:
+            raise ConfigEntryNotReady(f"Cannot resolve saved Dreame device: {err}") from err
 
     coordinator = DreameWetDryCoordinator(hass, entry, api, device_id, device_info)
 
@@ -156,6 +168,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: DreameWetDryConfigEntry)
                     sensor_entry.entity_id, disabled_by=er.RegistryEntryDisabler.INTEGRATION
                 )
         hass.config_entries.async_update_entry(entry, data={**entry.data, "_h15_layout_schema": 1})
+
+    if coordinator.is_h15_pro_heat and entry.data.get("_h15_layout_schema", 0) < 2:
+        registry = er.async_get(hass)
+        redundant = {
+            *(f"{coordinator.device_id}_h15_setting_{s}_{p}" for s, p in set(H15_SELECT_SETTINGS) - H15_PRIMARY_SELECT_KEYS),
+            *(f"{coordinator.device_id}_{meta['key']}" for meta in H15_ALERT_BINARY_SENSORS if meta["key"] not in H15_PRIMARY_ALERT_KEYS),
+        }
+        prefix = f"{coordinator.device_id}_h15_property_"
+        for entity_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+            optional = entity_entry.unique_id in redundant
+            if entity_entry.unique_id.startswith(prefix):
+                parts = entity_entry.unique_id[len(prefix):].split("_")
+                if len(parts) == 2 and all(part.isdigit() for part in parts):
+                    optional = h15_sensor_is_optional((int(parts[0]), int(parts[1])))
+            if optional and entity_entry.disabled_by is None:
+                registry.async_update_entity(entity_entry.entity_id, disabled_by=er.RegistryEntryDisabler.INTEGRATION)
+        hass.config_entries.async_update_entry(entry, data={**entry.data, "_h15_layout_schema": 2})
 
     entry.runtime_data = coordinator
     coordinator.start_polling()

@@ -4,6 +4,75 @@
       "h15_volume": {
         "name": "עוצמת קול (0: שקט, 1: נמוך, 2: גבוה)"
       }
+    },
+    "vacuum": {
+      "wet_dry": {
+        "name": "שואב",
+        "state_attributes": {
+          "work_mode": {
+            "name": "פעולה נוכחית"
+          },
+          "battery_level": {
+            "name": "סוללה"
+          },
+          "charging": {
+            "name": "בטעינה"
+          },
+          "start_action": {
+            "name": "פעולת ההפעלה"
+          },
+          "clean_count": {
+            "name": "מספר ניקיונות"
+          },
+          "roller_brush_remaining_minutes": {
+            "name": "זמן שנותר למברשת (דקות)"
+          },
+          "filter_remaining_minutes": {
+            "name": "זמן שנותר לפילטר (דקות)"
+          },
+          "warnings": {
+            "name": "אזהרות"
+          },
+          "errors": {
+            "name": "תקלות"
+          },
+          "cleaning_mode": {
+            "name": "מצב ניקוי"
+          },
+          "self_cleaning_mode": {
+            "name": "מצב ניקוי עצמי"
+          },
+          "drying_mode": {
+            "name": "מצב ייבוש"
+          },
+          "water_level": {
+            "name": "רמת מים"
+          },
+          "hot_water_mode": {
+            "name": "מצב מים חמים"
+          },
+          "volume_level": {
+            "name": "עוצמת קול"
+          },
+          "roller_brush_remaining_percent": {
+            "name": "יתרת המברשת (%)"
+          },
+          "filter_remaining_percent": {
+            "name": "יתרת הפילטר (%)"
+          }
+        }
+      }
+    },
+    "sensor": {
+      "consumable_front_brush_percent": {
+        "name": "יתרת מברשת גליל"
+      },
+      "consumable_back_brush_percent": {
+        "name": "יתרת מברשת אחורית"
+      },
+      "consumable_filter_percent": {
+        "name": "יתרת פילטר"
+      }
     }
   }
 }

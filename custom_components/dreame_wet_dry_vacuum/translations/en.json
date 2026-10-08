@@ -133,6 +133,15 @@
       },
       "work_mode": {
         "name": "Work mode"
+      },
+      "consumable_front_brush_percent": {
+        "name": "Roller brush remaining"
+      },
+      "consumable_back_brush_percent": {
+        "name": "Rear brush remaining"
+      },
+      "consumable_filter_percent": {
+        "name": "Filter remaining"
       }
     },
     "binary_sensor": {
@@ -215,6 +224,64 @@
       },
       "start_self_dry": {
         "name": "Start self-drying"
+      }
+    },
+    "vacuum": {
+      "wet_dry": {
+        "name": "Vacuum",
+        "state_attributes": {
+          "work_mode": {
+            "name": "Current activity"
+          },
+          "battery_level": {
+            "name": "Battery"
+          },
+          "charging": {
+            "name": "Charging"
+          },
+          "start_action": {
+            "name": "Start action"
+          },
+          "clean_count": {
+            "name": "Clean count"
+          },
+          "roller_brush_remaining_minutes": {
+            "name": "Roller brush remaining (min)"
+          },
+          "filter_remaining_minutes": {
+            "name": "Filter remaining (min)"
+          },
+          "warnings": {
+            "name": "Warnings"
+          },
+          "errors": {
+            "name": "Errors"
+          },
+          "cleaning_mode": {
+            "name": "Cleaning mode"
+          },
+          "self_cleaning_mode": {
+            "name": "Self-cleaning mode"
+          },
+          "drying_mode": {
+            "name": "Drying mode"
+          },
+          "water_level": {
+            "name": "Water level"
+          },
+          "hot_water_mode": {
+            "name": "Hot water mode"
+          },
+          "volume_level": {
+            "name": "Volume"
+          },
+          "roller_brush_remaining_percent": {
+            "name": "Roller brush remaining (%)"
+          },
+          "filter_remaining_percent": {
+            "name": "Filter remaining (%)"
+          }
+        }
       }
     }
   }

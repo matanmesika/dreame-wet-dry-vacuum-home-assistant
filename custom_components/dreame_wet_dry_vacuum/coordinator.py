@@ -154,7 +154,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         snap = self.device_info_raw
         bind = snap.get("bindDomain") or snap.get("bind_domain")
         if not bind:
-            _LOGGER.warning("No bindDomain; MQTT disabled, HTTP polling only")
+            _LOGGER.info("Device metadata has no bindDomain; using HTTP polling")
             return
 
         self.mqtt = DreameMqttClient(
@@ -200,6 +200,8 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self.props[(24, 1)] = row["value"]
             if key in {(16, 1), (16, 2), (16, 7), (16, 8)}:
                 await self._async_read_control_properties({(16, 1), (16, 2), (16, 8)})
+            if key in {(1, 8), (1, 10), (1, 81), (1, 82), (1, 75), (1, 83)}:
+                await self._async_read_control_properties({(1, 8), (1, 10), (1, 81), (1, 82), (1, 75), (1, 83)})
             if key in {(1, 76), (1, 77)}:
                 await self._async_read_control_properties({(1, 76), (1, 77)})
             plan = build_h15_write_plan(key, value, self.props, arm_bit=arm_bit)

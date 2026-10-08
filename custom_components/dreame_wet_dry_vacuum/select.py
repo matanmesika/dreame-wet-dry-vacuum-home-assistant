@@ -7,7 +7,12 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import DreameWetDryConfigEntry
-from .const import H15_SELECT_SETTINGS, KNOWN_SELECT_PROPS, decode_schedule
+from .const import (
+    H15_PRIMARY_SELECT_KEYS,
+    H15_SELECT_SETTINGS,
+    KNOWN_SELECT_PROPS,
+    decode_schedule,
+)
 from .entity import DreameH15Setting, DreameWetDryEntity
 
 
@@ -18,7 +23,7 @@ async def async_setup_entry(
 ) -> None:
     coordinator = entry.runtime_data
     if coordinator.is_h15_pro_heat:
-        async_add_entities(DreameH15Select(coordinator, key) for key in H15_SELECT_SETTINGS)
+        async_add_entities(DreameH15Select(coordinator, key) for key in H15_SELECT_SETTINGS if key in H15_PRIMARY_SELECT_KEYS)
         return
 
     async_add_entities(

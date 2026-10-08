@@ -105,14 +105,14 @@ def _setup_h15_sensors(
     coordinator: DreameWetDryCoordinator,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Expose every property discovered from the H15 as a safe read-only sensor."""
+    """Expose useful H15 telemetry; keep research properties in exports."""
     added: set[tuple[int, int]] = set()
 
     @callback
     def _add_new(keys: set[tuple[int, int]]) -> None:
         entities: list[SensorEntity] = []
         for key in sorted(keys):
-            if key in added:
+            if key in added or h15_sensor_is_optional(key) or coordinator.props.get(key) in (None, -1, "-1"):
                 continue
             added.add(key)
             entities.append(DreameH15PropertySensor(coordinator, key))
@@ -122,7 +122,10 @@ def _setup_h15_sensors(
     coordinator.new_prop_callback = _add_new
     _add_new(set(coordinator.props))
     async_add_entities([DreameH15MappingChangesSensor(coordinator),
-                        *(DreameWetDryConsumableSensor(coordinator, meta) for meta in CONSUMABLE_SENSORS if meta["key"] != "back_brush" or coordinator.props.get((7, 7), -1) >= 0)])
+                        *(DreameWetDryConsumableSensor(coordinator, meta, percentage=percentage)
+                          for meta in CONSUMABLE_SENSORS
+                          if meta["key"] != "back_brush" or coordinator.props.get((7, 7), -1) >= 0
+                          for percentage in (False, True))])
 
     _LOGGER.info(
         "Created %d H15 Pro Heat property sensors for model=%s",
@@ -409,23 +412,27 @@ class DreameWetDrySensor(
 class DreameWetDryConsumableSensor(
     CoordinatorEntity[DreameWetDryCoordinator], SensorEntity
 ):
-    """Legacy/H14 consumable remaining-life sensor."""
+    """Remaining life: H15 percentage, legacy/H14 hours."""
 
     _attr_has_entity_name = True
     _attr_native_unit_of_measurement = "h"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator: DreameWetDryCoordinator, meta: dict) -> None:
+    def __init__(self, coordinator: DreameWetDryCoordinator, meta: dict, *, percentage: bool = False) -> None:
         super().__init__(coordinator)
+        self._percentage = percentage and coordinator.is_h15_pro_heat
         self._left_key = meta["left"]
         self._max_key = meta["max"]
         self._full_life_min = 0 if coordinator.is_h15_pro_heat else meta["full_life_min"]
         if coordinator.is_h15_pro_heat:
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        if self._percentage:
+            self._attr_native_unit_of_measurement = "%"
         self._attr_unique_id = (
             f"{coordinator.device_id}_consumable_{meta['key']}"
+            + ("_percent" if self._percentage else "")
         )
-        self._attr_translation_key = f"consumable_{meta['key']}"
+        self._attr_translation_key = f"consumable_{meta['key']}" + ("_percent" if self._percentage else "")
         self._attr_icon = meta.get("icon")
         self._attr_device_info = build_device_info(coordinator)
 
@@ -439,6 +446,8 @@ class DreameWetDryConsumableSensor(
     @property
     def native_value(self) -> float | None:
         left = self._left_minutes()
+        if self._percentage:
+            return self.extra_state_attributes.get("percent_remaining")
         return None if left is None else round(left / 60, 1)
 
     @property
@@ -466,6 +475,7 @@ class DreameWetDryConsumableSensor(
             attrs.pop("full_life_hours")
         if full > 0:
             attrs["percent_remaining"] = max(
-                0, min(100, round(left / full * 100))
+                0, min(100, (left * 100 // full) if self.coordinator.is_h15_pro_heat
+                       else round(left / full * 100))
             )
         return attrs

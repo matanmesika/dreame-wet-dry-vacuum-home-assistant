@@ -3,6 +3,7 @@ import asyncio
 import importlib
 import sys
 import types
+from enum import IntFlag, StrEnum
 from unittest.mock import AsyncMock
 
 import pytest
@@ -37,11 +38,25 @@ def component(monkeypatch):
     class PlatformEntity:
         pass
 
+    class VacuumFeature(IntFlag):
+        STATE = 1
+        START = 2
+        STOP = 4
+        FAN_SPEED = 8
+
+    class Activity(StrEnum):
+        CLEANING = "cleaning"
+        DOCKED = "docked"
+        IDLE = "idle"
+        PAUSED = "paused"
+        ERROR = "error"
+
     adapters = {
         "homeassistant": {}, "homeassistant.components": {},
         "homeassistant.helpers": {},
         "homeassistant.components.persistent_notification": {"async_create": lambda *args, **kw: None},
         "homeassistant.components.button": {"ButtonEntity": PlatformEntity},
+        "homeassistant.components.vacuum": {"StateVacuumEntity": PlatformEntity, "VacuumEntityFeature": VacuumFeature, "VacuumActivity": Activity},
         "homeassistant.components.binary_sensor": {"BinarySensorEntity": PlatformEntity, "BinarySensorDeviceClass": types.SimpleNamespace(RUNNING="running", CONNECTIVITY="connectivity", PROBLEM="problem", BATTERY_CHARGING="battery_charging")},
         "homeassistant.components.select": {"SelectEntity": PlatformEntity},
         "homeassistant.components.switch": {"SwitchEntity": PlatformEntity},
@@ -57,7 +72,7 @@ def component(monkeypatch):
         "homeassistant.const": {
             "EntityCategory": types.SimpleNamespace(CONFIG="config", DIAGNOSTIC="diagnostic"),
             "CONF_PASSWORD": "password", "CONF_USERNAME": "username",
-            "Platform": types.SimpleNamespace(SENSOR="sensor", BINARY_SENSOR="binary_sensor", SWITCH="switch", NUMBER="number", SELECT="select", BUTTON="button"),
+            "Platform": types.SimpleNamespace(SENSOR="sensor", BINARY_SENSOR="binary_sensor", SWITCH="switch", NUMBER="number", SELECT="select", BUTTON="button", VACUUM="vacuum"),
         },
         "homeassistant.core": {"HomeAssistant": Generic, "callback": lambda f: f},
         "homeassistant.exceptions": {
@@ -76,7 +91,7 @@ def component(monkeypatch):
         monkeypatch.setitem(sys.modules, name, module)
     package = "custom_components.dreame_wet_dry_vacuum"
     monkeypatch.setattr(sys.modules[package], "DreameWetDryConfigEntry", Generic, raising=False)
-    imported = ["coordinator", "entity", "select", "switch", "number", "sensor", "button", "binary_sensor"]
+    imported = ["coordinator", "entity", "select", "switch", "number", "sensor", "button", "binary_sensor", "vacuum"]
     for name in imported:
         monkeypatch.delitem(sys.modules, f"{package}.{name}", raising=False)
     modules = {name: importlib.import_module(f"{package}.{name}") for name in imported}
@@ -86,8 +101,9 @@ def component(monkeypatch):
         sys.modules.pop(f"{package}.{name}", None)
 
 
-@pytest.mark.parametrize("model,expected,layout_schema", [("dreame.hold.w2449e", ["sensor.old_setting"], 1), ("dreame.hold.w2449e", ["sensor.old_setting", "sensor.raw_data"], 0), ("dreame.hold.w2306e", [], 0)])
-def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeypatch, model, expected, layout_schema):
+@pytest.mark.parametrize("model,expected,layout_schema", [("dreame.hold.w2449e", ["sensor.old_setting", "sensor.raw_data"], 1), ("dreame.hold.w2449e", ["sensor.old_setting", "sensor.raw_data"], 0), ("dreame.hold.w2306e", [], 0)])
+@pytest.mark.parametrize("discovery", ["list", "direct", "unresolved"])
+def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeypatch, model, expected, layout_schema, discovery):
     from pathlib import Path
 
     changed = []
@@ -118,7 +134,8 @@ def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeyp
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     api = types.SimpleNamespace(
-        login=AsyncMock(), get_devices=AsyncMock(return_value=[{"did": "test-device", "model": model}]),
+        login=AsyncMock(), get_devices=AsyncMock(return_value=[{"did": "test-device", "model": model}] if discovery == "list" else []),
+        get_device_record=AsyncMock(return_value={"did": "test-device", "model": model}),
     )
     monkeypatch.setattr(module, "DreameAPI", lambda **kwargs: api)
     coordinator = make_coordinator(component, model)
@@ -141,7 +158,19 @@ def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeyp
             async_forward_entry_setups=AsyncMock(),
         ),
     )
+    if discovery == "unresolved":
+        from custom_components.dreame_wet_dry_vacuum.api import DreameAPIError
+        api.get_device_record.side_effect = DreameAPIError("Device unavailable")
+        with pytest.raises(module.ConfigEntryNotReady):
+            asyncio.run(module.async_setup_entry(hass, entry))
+        assert changed == []
+        coordinator.async_config_entry_first_refresh.assert_not_awaited()
+        return
     assert asyncio.run(module.async_setup_entry(hass, entry))
+    if discovery == "direct":
+        api.get_device_record.assert_awaited_once_with("test-device", [])
+    else:
+        api.get_device_record.assert_not_awaited()
     assert changed == expected
     if expected:
         # A user's later decision to re-enable a diagnostic is respected.
@@ -157,7 +186,7 @@ def make_coordinator(component, model="dreame.hold.w2449e"):
     coordinator = component["coordinator"].DreameWetDryCoordinator(
         object(), object(), api, "test-device", {"model": model}
     )
-    coordinator.props.update({(16, 1): 2, (16, 2): 2, (16, 7): 4, (16, 8): 0, (24, 1): 2})
+    coordinator.props.update({(16, 6): 1, (16, 1): 2, (16, 2): 2, (16, 7): 4, (16, 8): 0, (24, 1): 2})
     coordinator.data = coordinator._build_data()
     return coordinator
 
@@ -169,7 +198,7 @@ def test_platforms_create_proper_h15_entities_and_keep_h14_controls(component):
         KNOWN_SWITCH_PROPS,
     )
     for model, sizes in [
-        ("dreame.hold.w2449e", (17, 17, 2)),
+        ("dreame.hold.w2449e", (11, 17, 2)),
         ("dreame.hold.w2306e", (len(KNOWN_SELECT_PROPS), len(KNOWN_SWITCH_PROPS), len(KNOWN_NUMBER_PROPS))),
     ]:
         coordinator = make_coordinator(component, model)
@@ -392,9 +421,20 @@ def test_uploaded_dirty_tank_full_state_is_confirmed_and_not_percent(component):
     assert alert.is_on is True
     assert alert.extra_state_attributes['mapping_status'] == 'confirmed'
     raw = component['sensor'].DreameH15PropertySensor(coordinator, (4, 6))
-    assert raw.native_value == 81
-    assert raw.extra_state_attributes['mapping_status'] == 'candidate'
+    assert raw.native_value == 'Full'
+    assert raw.extra_state_attributes['mapping_status'] == 'confirmed'
+    assert raw.extra_state_attributes['known_values'] == {'0': 'Normal', '81': 'Full'}
     assert '_attr_native_unit_of_measurement' not in raw.__dict__
+
+
+def test_uploaded_dirty_tank_normal_state_is_confirmed_without_inventing_other_values(component):
+    coordinator = make_coordinator(component)
+    coordinator.data.update({'4.2': 0, '4.6': 0})
+    raw = component['sensor'].DreameH15PropertySensor(coordinator, (4, 6))
+    assert raw.native_value == 'Normal'
+    assert raw.extra_state_attributes['mapping_status'] == 'confirmed'
+    coordinator.data['4.6'] = 82
+    assert raw.native_value == 'Unknown (82)'
 
 
 @pytest.mark.parametrize("position,raw,label", [(0, 0, "Silent"), (1, 30, "Low"), (2, 60, "High")])
@@ -528,3 +568,90 @@ def test_reauth_preserves_existing_account_country_and_manual_server(config_flow
     flow.async_update_reload_and_abort = lambda entry, data_updates: data_updates
     assert asyncio.run(flow.async_step_reauth_confirm({"password": "new-password"})) == {"password": "new-password"}
     assert seen == [("eu", "DE")]
+
+
+@pytest.mark.parametrize("remaining,expected", [(3413, 94), (3473, 96), (3600, 100), (360, 10), (0, 0), (-1, None)])
+def test_h15_consumables_use_app_percentage_and_preserve_minutes(component, remaining, expected):
+    from custom_components.dreame_wet_dry_vacuum.const import CONSUMABLE_SENSORS
+    coordinator = make_coordinator(component)
+    for meta in (CONSUMABLE_SENSORS[0], CONSUMABLE_SENSORS[2]):
+        coordinator.data.update({meta["left"]: remaining, meta["max"]: 3600})
+        entity = component["sensor"].DreameWetDryConsumableSensor(coordinator, meta, percentage=True)
+        assert entity._attr_native_unit_of_measurement == "%"
+        assert entity.native_value == expected
+        if expected is not None:
+            assert entity.extra_state_attributes["minutes_remaining"] == remaining
+            assert entity.extra_state_attributes["full_life_source"] == "device"
+
+
+def test_consumable_missing_maximum_is_unknown_on_h15_and_unchanged_on_h14(component):
+    from custom_components.dreame_wet_dry_vacuum.const import CONSUMABLE_SENSORS
+    meta = CONSUMABLE_SENSORS[0]
+    for model, unit, value in (("dreame.hold.w2449e", "%", None), ("dreame.hold.w2306e", "h", 56.9)):
+        coordinator = make_coordinator(component, model)
+        coordinator.data.update({"6.7": 3413, "6.6": -1})
+        entity = component["sensor"].DreameWetDryConsumableSensor(coordinator, meta, percentage=True)
+        assert entity._attr_native_unit_of_measurement == unit
+        assert entity.native_value == value
+        if value is None:
+            assert "percent_remaining" not in entity.extra_state_attributes
+        else:
+            assert entity.extra_state_attributes["percent_remaining"] == 95
+
+
+def test_h15_research_fields_stay_in_export_without_creating_sensor_entities(component):
+    from custom_components.dreame_wet_dry_vacuum.const import (
+        H15_GENERAL_SENSOR_KEYS,
+        H15_MAINTENANCE_SENSOR_KEYS,
+    )
+    coordinator = make_coordinator(component)
+    coordinator.props.update({(3, 1): 100, (1, 28): 7, (1, 68): 1, (4, 5): [81], (4, 6): 0, (4, 2): 0, (6, 7): 3413, (7, 7): -1})
+    coordinator.data = coordinator._build_data()
+    entities = []
+    asyncio.run(component["sensor"].async_setup_entry(None, types.SimpleNamespace(runtime_data=coordinator), entities.extend))
+    properties = [e._key for e in entities if isinstance(e, component["sensor"].DreameH15PropertySensor)]
+    assert set(properties) <= H15_GENERAL_SENSOR_KEYS | H15_MAINTENANCE_SENSOR_KEYS
+    assert (4, 6) in properties
+    assert (1, 68) not in properties and (4, 5) not in properties and (7, 7) not in properties
+    assert coordinator.props[(4, 5)] == [81]
+    count_before = len(entities)
+    coordinator.props[(16, 1)] = 3
+    coordinator.new_prop_callback({(16, 1)})
+    assert len(entities) == count_before  # Research callback does not add a duplicate control sensor.
+    coordinator.props[(1, 54)] = 44
+    count_before = len(entities)
+    coordinator.new_prop_callback({(1, 54)})
+    assert len(entities) == count_before + 1
+
+
+def test_native_h15_settings_follow_custom_and_hot_water_context(component):
+    coordinator = make_coordinator(component)
+    suction = component["select"].DreameH15Select(coordinator, (16, 1))
+    water = component["select"].DreameH15Select(coordinator, (16, 2))
+    mode = component["select"].DreameH15Select(coordinator, (16, 7))
+    coordinator.data.update({"16.6": 0, "16.7": 4, "16.8": 0})
+    assert not suction.available and not water.available and not mode.available
+    coordinator.data["16.6"] = 1
+    assert suction.available and water.available and mode.available
+    coordinator.data["16.7"] = 1
+    assert not suction.available and not water.available and mode.available
+    coordinator.data.update({"16.7": 4, "16.8": 1})
+    assert not suction.available and water.available
+
+
+def test_wash_dry_change_refreshes_companion_and_sends_complete_app_batch(component):
+    coordinator = make_coordinator(component)
+    coordinator.props.update({(1, 8): 2, (1, 10): 1})
+    coordinator.api.get_properties.return_value = [{"siid": 1, "piid": 10, "code": 0, "value": 3}]
+    asyncio.run(coordinator.async_set_h15_setting((1, 8), 4))
+    assert coordinator.api.set_h15_properties.call_args.args[1] == {
+        (1, 8): 4, (1, 10): 3, (1, 81): 4, (1, 82): 3, (1, 75): 4, (1, 83): 3,
+    }
+    assert coordinator.data["1.10"] == 3
+
+
+def test_missing_wash_companion_prevents_partial_batch(component):
+    coordinator = make_coordinator(component)
+    with pytest.raises(ValueError):
+        asyncio.run(coordinator.async_set_h15_setting((1, 10), 3))
+    coordinator.api.set_h15_properties.assert_not_called()

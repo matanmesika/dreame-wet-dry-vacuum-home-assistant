@@ -11,7 +11,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DreameWetDryConfigEntry
-from .const import ALERT_BINARY_SENSORS, H15_ALERT_BINARY_SENSORS, KNOWN_BINARY_PROPS
+from .const import (
+    ALERT_BINARY_SENSORS,
+    H15_ALERT_BINARY_SENSORS,
+    H15_PRIMARY_ALERT_KEYS,
+    KNOWN_BINARY_PROPS,
+)
 from .coordinator import DreameWetDryCoordinator
 from .entity import build_device_info
 
@@ -32,7 +37,7 @@ async def async_setup_entry(
     if coordinator.is_h15_pro_heat:
         # Use the H15 app warning table; keep legacy H14 masks separate.
         async_add_entities([DreameWetDryOnlineSensor(coordinator), DreameWetDryChargingSensor(coordinator),
-                            *(DreameWetDryMappedAlert(coordinator, meta) for meta in H15_ALERT_BINARY_SENSORS)])
+                            *(DreameWetDryMappedAlert(coordinator, meta) for meta in H15_ALERT_BINARY_SENSORS if meta["key"] in H15_PRIMARY_ALERT_KEYS)])
         return
 
     entities = [

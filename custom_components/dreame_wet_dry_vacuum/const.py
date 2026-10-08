@@ -716,10 +716,12 @@ H15_PROPERTY_META: dict[tuple[int, int], dict[str, Any]] = {
         "note": "Observed list value on H15; do not inherit H14 water semantics until verified.",
     },
     (4, 6): {
-        "name": "Raw 4.6",
-        "confidence": "unmapped",
-        "icon": "mdi:code-tags",
+        "name": "Dirty water tank status",
+        "confidence": "confirmed",
+        "icon": "mdi:water-alert-outline",
         "diagnostic": True,
+        "value_map": {0: "Normal", 81: "Full"},
+        "note": "H15-only live comparison: raw 81 coincided with the app's Used water tank is full alert and error bit 4096; a later export after the alert cleared returned raw 0. Other raw values are unknown; this is a state, not a percentage.",
     },
     (4, 7): {
         "name": "Raw 4.7",
@@ -1121,10 +1123,19 @@ def build_h15_write_plan(
         return {key: value | (current & 2)}
 
     if key in {(1, 8), (1, 81), (1, 75), (1, 10), (1, 82), (1, 83)}:
-        # The w2449e app synchronizes manual, return-to-base and scheduled
-        # wash/dry preferences. Update all three copies of the changed setting.
-        siblings = (8, 81, 75) if key in {(1, 8), (1, 81), (1, 75)} else (10, 82, 83)
-        return {(1, piid): value for piid in siblings}
+        # Main-page PopWashDry writes six fields together. Advanced scheduling
+        # writes only its own wash/dry pair. Preserve the companion preference.
+        pairs = {8: 10, 10: 8, 81: 82, 82: 81, 75: 83, 83: 75}
+        companion = (1, pairs[key[1]])
+        current = _current(props, companion)
+        if current not in H15_SELECT_SETTINGS[companion]:
+            raise ValueError("Refresh the companion wash/dry mode before changing this setting")
+        if key[1] in (75, 83):
+            return {key: value, companion: current}
+        wash = value if key[1] in (8, 81) else current
+        dry = value if key[1] in (10, 82) else current
+        return {(1, 8): wash, (1, 10): dry, (1, 81): wash,
+                (1, 82): dry, (1, 75): wash, (1, 83): dry}
 
     if key in {(16, 1), (16, 2), (16, 7), (16, 8)}:
         if key == (16, 8) and value == 0:
@@ -1136,8 +1147,6 @@ def build_h15_write_plan(
             raise ValueError("Suction is fixed to Gentle while hot water is enabled")
         if key == (16, 7):
             power, water = {1: (1, 2), 3: (3, 3), 4: (1 if hot else 2, 2)}[value]
-            if hot and value != 4:
-                raise ValueError("Turn hot water off before selecting Quiet or Turbo")
             return {(16, 7): value, (16, 1): power, (16, 2): water, (16, 6): 1}
         water = value if key == (16, 2) else _current(props, (16, 2))
         power = value if key == (16, 1) else (1 if hot or key == (16, 8) else _current(props, (16, 1)))
@@ -1218,6 +1227,10 @@ def build_h15_command_plan(command: str, props: dict[tuple[int, int], Any]) -> d
         if state not in H15_DRY_STATES:
             raise ValueError("Drying is not running")
         return {(1, 2): 0}
+    # This is checked again after the coordinator refreshes control properties,
+    # so a newly reported fault cannot be bypassed by a stale native dialog.
+    if props.get((4, 2)) not in (None, -1, "-1") and _current(props, (4, 2)) > 0:
+        raise ValueError("Resolve the device fault before starting or resuming a task")
     if command == "resume_self_clean":
         if state not in H15_WASH_PAUSED_STATES:
             raise ValueError("Self-cleaning is not paused")
@@ -1374,7 +1387,7 @@ H15_PROPERTY_META[(24, 1)]["name"] = "Lifting arm modes"
 H15_CONTROL_KEYS.update(H15_SELECT_SETTINGS)
 H15_PROPERTY_META[(1, 28)]["name"] = "Work state"
 H15_PROPERTY_META[(1, 6)].update(name="Altitude setting raw", confidence="plugin", value_map={0: "Standard altitude", 1: "High altitude"}, note="DeviceLocationPage writes PropHighLevelMode based on selected city ASL. w2449e holdPluginEnableLocation=false; not a user cleaning-mode selector.")
-H15_PROPERTY_META[(4, 6)].update(name="Dirty water tank candidate raw", confidence="candidate", note="2026-10-07 full dirty-water tank capture: value changed 0 to 81 alongside 4.2=4096 and app alert. Meaning, scale and reverse transition still unverified; no percent unit is assigned.")
+H15_PROPERTY_META[(4, 6)].update(name="Dirty water tank status", confidence="confirmed", value_map={0: "Normal", 81: "Full"}, note="H15-only live comparison: raw 81 coincided with the app's Used water tank is full alert and error bit 4096; the 2026-10-08 export after the alert cleared returned raw 0. Other raw values remain unknown; this is a state, not a percentage.")
 H15_PROPERTY_META[(4, 2)]["note"] += " Live-confirmed 2026-10-07: raw 4096 matches app Used water tank is full."
 for _alert in H15_ALERT_BINARY_SENSORS:
     _alert["confidence"] = "confirmed" if _alert["data_key"] == "4.2" and _alert["shift"] == 12 and _alert["field_values"] == (1,) else "plugin"
@@ -1384,9 +1397,19 @@ for _alert in H15_ALERT_BINARY_SENSORS:
 # remain available as optional diagnostics without altering property mappings.
 H15_GENERAL_SENSOR_KEYS = {(3, 1), (1, 28), (1, 29), (1, 30),
                            (1, 53), (1, 54), (1, 55), (1, 56), (1, 57)}
-H15_MAINTENANCE_SENSOR_KEYS = {(4, 1), (4, 2), (6, 7), (7, 7), (19, 3)}
+H15_MAINTENANCE_SENSOR_KEYS = {(4, 1), (4, 2), (4, 6), (6, 7), (7, 7), (19, 3)}
 
 
 def h15_sensor_is_optional(key: tuple[int, int]) -> bool:
     """Keep unresolved/duplicate readings out of the main device cards."""
     return key not in H15_GENERAL_SENSOR_KEYS | H15_MAINTENANCE_SENSOR_KEYS
+
+
+# The app presents one wash/dry choice while internally synchronizing copies.
+H15_PRIMARY_SELECT_KEYS = set(H15_SELECT_SETTINGS) - {(1, 75), (1, 81), (1, 82), (1, 83), (24, 1), (25, 1)}
+
+# Separate entities only for tank, wear and routine maintenance indicators.
+# All other decoded warnings/errors remain on the aggregate alert sensors.
+H15_PRIMARY_ALERT_KEYS = {"h15_warn_0_1", "h15_warn_1_1", "h15_warn_2_3",
+                          "h15_warn_4_1", "h15_warn_6_1", "h15_warn_7_1", "h15_warn_8_1",
+                          "h15_error_11_1", "h15_error_12_1", "h15_error_23_1", "h15_error_28_1"}

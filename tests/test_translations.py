@@ -21,7 +21,8 @@ COMPONENT = Path(__file__).parent.parent / "custom_components" / "dreame_wet_dry
 # {platform: set of translation_keys the code will request}
 EXPECTED: dict[str, set[str]] = {
     "sensor": {m["key"] for m in KNOWN_MQTT_PROPS.values()}
-    | {f"consumable_{m['key']}" for m in CONSUMABLE_SENSORS},
+    | {f"consumable_{m['key']}" for m in CONSUMABLE_SENSORS}
+    | {f"consumable_{m['key']}_percent" for m in CONSUMABLE_SENSORS},
     "binary_sensor": {"online", "charging"}
     | {m["key"] for m in KNOWN_BINARY_PROPS.values()}
     | {m["key"] for m in ALERT_BINARY_SENSORS},
@@ -29,6 +30,7 @@ EXPECTED: dict[str, set[str]] = {
     "number": {m["key"] for m in KNOWN_NUMBER_PROPS.values()} | {"h15_volume"},
     "select": {m["key"] for m in KNOWN_SELECT_PROPS.values()},
     "button": {m["key"] for m in KNOWN_BUTTON_PROPS.values()},
+    "vacuum": {"wet_dry"},
 }
 
 TRANSLATION_FILES = [

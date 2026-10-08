@@ -177,17 +177,17 @@ class TestAuthedRequests:
         assert len(tokens) == 1
         assert tokens[0]["country"] == "IL"
 
-    def test_authoritative_account_region_does_not_probe_other_backends(self):
+    def test_login_region_with_devices_does_not_probe_other_backends(self):
         lists = []
 
         def handler(url, kwargs):
             if "oauth/token" in url:
                 return FakeResponse(200, {**TOKEN_OK, "region": "i2"})
             lists.append(url)
-            return FakeResponse(200, {"data": {"page": {"records": []}}})
+            return FakeResponse(200, {"data": {"page": {"records": [{"did": "saved"}]}}})
 
         api = DreameAPI("user", "pw", region="auto", country="IL", session=FakeSession(handler))
-        assert run(api.get_devices()) == []
+        assert run(api.get_devices()) == [{"did": "saved"}]
         assert len(lists) == 1
         assert lists[0].startswith("https://i2.iot.dreame.tech:")
 
@@ -224,6 +224,17 @@ class TestAuthedRequests:
         api = DreameAPI("u", "p", country="IL", session=session)
         assert not run(api.set_h15_properties("did", {(16, 1): 1, (16, 2): 2}))
 
+    def test_h15_write_accepts_string_encoded_acknowledgement(self):
+        def handler(url, kw):
+            return FakeResponse(200, TOKEN_OK if "oauth/token" in url else {
+                "data": {"code": "0", "result": [{
+                    "siid": "16", "piid": "14", "code": "0",
+                }]},
+            })
+
+        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
+        assert run(api.set_h15_properties("did", {(16, 14): 30}))
+
     def test_h15_batch_write_uses_one_rpc_and_preserves_h14_single_write(self):
         calls = []
 
@@ -238,9 +249,30 @@ class TestAuthedRequests:
 
         api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
         assert run(api.set_h15_properties("did", {(16, 1): 1, (16, 2): 2}))
-        assert calls == [[{"siid": 16, "piid": 1, "value": 1}, {"siid": 16, "piid": 2, "value": 2}]]
+        assert calls == [[
+            {"did": "did", "siid": 16, "piid": 1, "value": 1},
+            {"did": "did", "siid": 16, "piid": 2, "value": 2},
+        ]]
         assert run(api.set_property("did", 23, 1, 1))
         assert calls[-1] == [{"siid": 23, "piid": 1, "value": 1}]
+
+    def test_get_properties_normalizes_server_string_values_and_ids(self):
+        def handler(url, kw):
+            if "oauth/token" in url:
+                return FakeResponse(200, TOKEN_OK)
+            sent = kw["json"]["data"]["params"]
+            assert sent == [{"did": "did", "siid": 16, "piid": 7}]
+            return FakeResponse(200, {"data": {"result": [
+                {"siid": "16", "piid": "7", "code": "0", "value": "4"},
+                {"siid": "4", "piid": "5", "code": "0", "value": "[81]"},
+            ]}})
+
+        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
+        assert run(api.get_properties("did", [{"siid": 16, "piid": 7}])) == [
+            {"siid": 16, "piid": 7, "code": 0, "value": 4},
+            {"siid": 4, "piid": 5, "code": 0, "value": [81]},
+        ]
+
     @pytest.mark.parametrize("body", [{"data": None}, {}, {"data": {"result": None}}])
     def test_get_properties_handles_empty_sleeping_response(self, body):
         def handler(url, kwargs):
@@ -341,3 +373,54 @@ class TestAuthedRequests:
         assert snap["name"] == "H14 Pro"
         assert snap["battery"] == 100
         assert snap["online"] is True
+
+
+@pytest.mark.parametrize("model", ["dreame.hold.w2449e", "dreame.hold.w2306e"])
+def test_saved_device_uses_direct_info_when_cloud_list_is_empty(model):
+    record = {"did": "saved", "model": model, "bindDomain": "mqtt.example", "online": True, "latestStatus": 7, "deviceInfo": None}
+    def handler(url, kwargs):
+        if "oauth/token" in url:
+            return FakeResponse(200, {**TOKEN_OK, "region": "eu"})
+        if url.endswith("/device/info"):
+            assert kwargs["json"] == {"did": "saved"}
+            return FakeResponse(200, {"code": 0, "success": True, "data": record})
+        return FakeResponse(200, {"data": {"page": {"records": []}}})
+    session = FakeSession(handler)
+    api = DreameAPI("u", "p", region="auto", country="IL", session=session)
+    assert run(api.get_device_record("saved")) == record
+    assert run(api.get_device_snapshot("saved"))["online"] is True
+    assert api._region == "eu"
+    assert sum("oauth/token" in url for url in session.calls) == 1
+
+
+@pytest.mark.parametrize("body", [
+    {"code": 0, "data": {}},
+    {"code": 0, "data": {"did": "other", "model": "dreame.hold.w2449e"}},
+    {"code": 1, "data": {"did": "saved", "model": "dreame.hold.w2449e"}},
+    {"code": 0, "success": False, "data": {"did": "saved", "model": "dreame.hold.w2449e"}},
+])
+def test_unresolved_saved_device_does_not_create_unknown_model(body):
+    session = FakeSession(lambda url, kwargs: FakeResponse(200, TOKEN_OK if "oauth/token" in url else body))
+    api = DreameAPI("u", "p", country="IL", session=session)
+    with pytest.raises(DreameAPIError, match="could not be resolved"):
+        run(api.get_device_record("saved", []))
+
+
+@pytest.mark.parametrize("hint", [{"region": "eu"}, {"domain": "https://eu.iot.dreame.tech"}])
+def test_empty_login_region_does_not_suppress_auto_discovery(hint):
+    lists = []
+    def handler(url, kwargs):
+        if "oauth/token" in url:
+            return FakeResponse(200, {**TOKEN_OK, **hint})
+        lists.append(url)
+        rows = [{"did": "saved", "model": "dreame.hold.w2449e"}] if url.startswith("https://i2.") else []
+        return FakeResponse(200, {"data": {"page": {"records": rows}}})
+    session = FakeSession(handler)
+    api = DreameAPI("u", "p", region="auto", country="IL", session=session)
+    assert run(api.get_devices())[0]["did"] == "saved"
+    assert api._region == "i2"
+    assert len(lists) == 2
+    assert len([url for url in session.calls if "oauth/token" in url]) == 1
+    assert api._country == "IL"
+    assert run(api.get_devices())[0]["did"] == "saved"
+    assert len(lists) == 3  # Confirmed server is reused.

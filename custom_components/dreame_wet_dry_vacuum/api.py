@@ -146,7 +146,6 @@ class DreameAPI:
         self._region = region
         self._base_url = REGION_URLS[region]
         self._rlc = _compute_rlc(region, self._country)
-        self._region_discovery_done = True
 
     def _set_domain(self, domain: str) -> None:
         """Use a Dreame-provided API domain when it is safe to trust."""
@@ -156,7 +155,6 @@ class DreameAPI:
             _LOGGER.warning("Ignoring unexpected Dreame login domain: %s", domain)
             return
         self._base_url = f"https://{host}:13267"
-        self._region_discovery_done = True
         prefix = host.split(".", 1)[0]
         if prefix in REGION_URLS:
             self._region = prefix
@@ -235,7 +233,8 @@ class DreameAPI:
         self._uid = result.get("uid")
 
         # Dreame may tell us the account's actual backend in the login response.
-        # Prefer that metadata over guessing from the user's physical country.
+        # Try that metadata before the other discovery candidates. A login
+        # hint alone does not prove that device discovery has succeeded.
         response_region = str(result.get("region") or "").lower()
         response_domain = str(result.get("domain") or "").strip().lower()
         if self._requested_region == "auto":
@@ -472,27 +471,56 @@ class DreameAPI:
             )
         return records
 
+    async def get_device_record(
+        self, device_id: str, records: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
+        """Resolve an existing device even when the cloud list is empty.
+
+        The direct info endpoint uses the same bearer session and backend.
+        Never initialize an unknown model as a legacy device or substitute a
+        different device returned by the server.
+        """
+        if records is None:
+            records = await self.get_devices()
+        record = next(
+            (item for item in records if str(item.get("did")) == str(device_id)),
+            {},
+        )
+        if record.get("model"):
+            return record
+        response = await self.get_device_info_full(device_id)
+        data = response.get("data")
+        if (
+            response.get("code") not in (0, "0")
+            or response.get("success") is False
+            or not isinstance(data, dict)
+            or str(data.get("did")) != str(device_id)
+            or not data.get("model")
+        ):
+            raise DreameAPIError(
+                "Saved Dreame device could not be resolved by list or device/info; "
+                "check account access and cloud region"
+            )
+        return data
+
     async def get_device_snapshot(self, device_id: str) -> dict[str, Any]:
         """
         Return the cloud-cached state for a device (battery, status, online).
         This always works, even when the vacuum is docked/asleep, because it
         reads the last state the device reported to the cloud.
         """
-        devices = await self.get_devices()
-        for d in devices:
-            if str(d.get("did")) == str(device_id):
-                return {
-                    "battery": d.get("battery"),
-                    "status": d.get("latestStatus"),
-                    "online": d.get("online"),
-                    "model": d.get("model"),
-                    "name": d.get("deviceInfo", {}).get("displayName")
-                    or d.get("customName")
-                    or d.get("model"),
-                    "firmware": d.get("ver"),
-                    "mac": d.get("mac"),
-                }
-        return {}
+        d = await self.get_device_record(device_id)
+        return {
+            "battery": d.get("battery"),
+            "status": d.get("latestStatus"),
+            "online": d.get("online"),
+            "model": d.get("model"),
+            "name": (d.get("deviceInfo") or {}).get("displayName")
+            or d.get("customName")
+            or d.get("model"),
+            "firmware": d.get("ver"),
+            "mac": d.get("mac"),
+        }
 
     async def get_status_props(
         self, device_id: str, keys: list[str]
@@ -511,9 +539,14 @@ class DreameAPI:
         )
 
         out: dict[str, Any] = {}
-        for item in result.get("data") or []:
+        items = result.get("data")
+        if not isinstance(items, list):
+            return out
+        for item in items:
+            if not isinstance(item, dict):
+                continue
             key = item.get("key")
-            if key is None or "value" not in item:
+            if not isinstance(key, str) or "value" not in item:
                 continue
             out[key] = _parse_prop_value(item["value"])
         return out
@@ -529,8 +562,10 @@ class DreameAPI:
         url = self._base_url + ENDPOINTS["send_command"].format(prefix=DREAME_IOT_PREFIX)
 
         req_id = _random_request_id()
+        # Match Dreamehome's Model.getProps request rows. Keep response values
+        # normalized so string-encoded enums cannot overwrite valid cached ints.
         params = [
-            {"siid": p["siid"], "piid": p["piid"], "code": 0, "updateTime": 0}
+            {"did": device_id, "siid": p["siid"], "piid": p["piid"]}
             for p in props
         ]
 
@@ -551,7 +586,20 @@ class DreameAPI:
         if not isinstance(data, dict):
             return []
         rows = data.get("result")
-        return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+        if not isinstance(rows, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            for field in ("siid", "piid", "code"):
+                if field in item:
+                    item[field] = _parse_prop_value(item[field])
+            if "value" in item:
+                item["value"] = _parse_prop_value(item["value"])
+            normalized.append(item)
+        return normalized
 
     async def set_property(
         self, device_id: str, siid: int, piid: int, value: Any
@@ -586,8 +634,10 @@ class DreameAPI:
         if not properties:
             return False
         req_id = _random_request_id()
+        # The official Dreamehome plugin puts the device DID on every property
+        # row (Model.createSetPropReq), in addition to the outer command DID.
         params = [
-            {"siid": siid, "piid": piid, "value": value}
+            {"did": device_id, "siid": siid, "piid": piid, "value": value}
             for (siid, piid), value in properties.items()
         ]
         result = await self._authed_post(
@@ -601,16 +651,22 @@ class DreameAPI:
             },
         )
         data = result.get("data")
-        rows = data.get("result") if isinstance(data, dict) and data.get("code", 0) == 0 else None
+        outer_code = _parse_prop_value(data.get("code", 0)) if isinstance(data, dict) else None
+        rows = data.get("result") if isinstance(data, dict) and outer_code == 0 else None
         if not isinstance(rows, list) or len(rows) != len(params):
+            _LOGGER.warning(
+                "H15 set_properties was not acknowledged (response_code=%s, expected_rows=%d, received_rows=%s)",
+                outer_code, len(params), len(rows) if isinstance(rows, list) else "invalid",
+            )
             return False
         returned: set[tuple[int, int]] = set()
         for row in rows:
-            if not isinstance(row, dict) or row.get("code") != 0 or row.get("value") in (-1, "-1"):
+            if not isinstance(row, dict) or _parse_prop_value(row.get("code")) != 0 or _parse_prop_value(row.get("value")) == -1:
+                _LOGGER.warning("H15 set_properties rejected a row (code=%s)", row.get("code") if isinstance(row, dict) else "invalid")
                 return False
             if "siid" in row or "piid" in row:
                 try:
-                    pair = (int(row["siid"]), int(row["piid"]))
+                    pair = (int(_parse_prop_value(row["siid"])), int(_parse_prop_value(row["piid"])))
                 except (KeyError, TypeError, ValueError):
                     return False
                 if pair not in properties or pair in returned:

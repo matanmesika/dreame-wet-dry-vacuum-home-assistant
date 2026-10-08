@@ -12,7 +12,16 @@ It connects to the Dreame cloud, authenticates with your Dreame account, and exp
 
 ## Features
 
-This is a *wet & dry stick* vacuum (not a robot), so there is **no `vacuum` entity**. Instead the integration exposes the device through standard entity platforms:
+This is a *wet & dry stick* vacuum. H15 Pro Heat also exposes a primary **`vacuum` entity** for Home Assistant's built-in control dialog. Existing H14 entities and mappings remain unchanged. The integration continues to expose detailed settings and maintenance through standard entity platforms:
+
+### Native H15 vacuum control (experimental)
+- The entity belongs to the existing device and uses its device name.
+- Start performs **dock self-cleaning**, or resumes paused self-cleaning; it does not remotely start manual floor cleaning. Stop routes to the reported self-cleaning or drying task.
+- Suction choices use the existing guarded H15 setting path and are offered only when hot-water mode is off.
+- The existing battery sensor supplies battery information to modern HA dialogs; battery attributes also support older dialogs.
+- Attributes include the exact work mode (including drying), wash/dry settings, warnings, errors and reported brush/filter remaining time. Percentages require a reported maximum; unsupported values remain unknown.
+- The built-in dialog follows the active HA theme. Its layout is controlled by HA; this does not add custom tabs or the full dashboard. Detailed selects, volume slider, drying buttons and maintenance reset buttons remain on the device.
+- No return-home, locate, robot map or area-cleaning capability is advertised. Sleeping alone is not labelled docked. Mapping and physical validation remain incomplete; no new release is assigned.
 
 ### Sensors
 - **State** — current activity (mopping, drying, self-cleaning, charging, …)
@@ -111,9 +120,9 @@ For H15 the coordinator now:
 - scans **SIID 1-40 plus SIID 100 / PIID 1-120** during initial mapping discovery;
 - performs targeted read-only `get_properties` requests for app-defined keys that
   may be absent from the cloud cache;
-- exposes returned telemetry as sensors and mapped settings as selects, switches and a volume slider;
+- exposes useful reported telemetry and primary settings; research fields stay in exports;
 - decodes known H15 enums while preserving the exact raw value in entity attributes;
-- keeps unknown properties as `Raw <siid.piid>`;
+- retains unknown properties in diagnostic exports without creating extra daily sensors;
 - refreshes only discovered properties during the normal five-minute safety poll;
 - accepts new MQTT properties dynamically without a restart.
 
@@ -136,7 +145,7 @@ shared entity support in `entity.py`, device calls and exports in `api.py`, and
 concrete entities in the existing platforms. No additional model-specific Python
 files are required. H14 tables and legacy controls retain their behavior.
 
-H15 controls include 17 selects, 17 switches and two numeric settings. These cover
+H15 daily controls include 11 primary selects, switches and two numeric settings. Redundant mode copies and unsupported settings are not separate primary entities. These cover
 cleaning/suction/water/heat settings, self-cleaning and drying modes, traction,
 smart drying, detergent preferences, installed voice language, volume, and
 scheduled wash/dry time and weekdays. Volume follows the app's 0/30/60 levels;
@@ -148,8 +157,7 @@ unsupported. Two-direction app control is available as bounded 0.3-second pulses
 only when the device reports horizontal and online, with an explicit stop on
 failure/cancellation. Six-direction robot control is unsupported by this model.
 
-The H15 app's warnVersion=2 tables provide 28 specific alert entities. Raw values
-remain available alongside decoded warnings/errors. Water-tank conditions are
+The H15 app's warnVersion=2 tables decode warnings and errors. Eleven relevant tank/accessory alerts have dedicated entities; the remaining messages are retained in aggregate warning/error attributes. Water-tank conditions are
 physical device telemetry, not manually reset counters. Consumable counters update
 only from device readback after a reset. Unknown values are retained for mapping.
 
@@ -157,8 +165,7 @@ Unit tests pass; physical-device and full Home Assistant runtime validation are
 still required. This work-in-progress is a draft validation build; sensor mapping remains incomplete while awaiting Dreame engineering feedback. Firmware/account management and complete cleaning-history retrieval are
 outside this control build; unresolved telemetry remains diagnostic.
 
-Properties that still have no verified H15 meaning remain visible as raw
-diagnostics so they can be identified with controlled one-setting-at-a-time tests.
+Properties without verified H15 meaning remain in diagnostic exports for controlled one-setting-at-a-time tests.
 
 ---
 

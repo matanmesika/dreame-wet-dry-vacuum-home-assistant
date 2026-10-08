@@ -101,8 +101,13 @@ class DreameH15Setting(CoordinatorEntity):
             return False
         if self._arm_bit is not None:
             return self._raw is not None and self._raw <= 31
-        if self._key == (16, 1):
-            return self.coordinator.data.get("16.8") in (0, "0")
+        if self._key in {(16, 7), (16, 8), (16, 1), (16, 2)}:
+            if self.coordinator.data.get("16.6") not in (1, "1"):
+                return False
+            if self._key in {(16, 1), (16, 2)} and self.coordinator.data.get("16.7") not in (4, "4"):
+                return False
+            if self._key == (16, 1):
+                return self.coordinator.data.get("16.8") in (0, "0")
         return True
 
     @property

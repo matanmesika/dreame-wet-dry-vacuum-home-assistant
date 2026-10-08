@@ -33,7 +33,7 @@ def test_hot_water_forces_gentle_suction_and_preserves_water():
     assert build_h15_write_plan((16, 8), 0, {}) == {(16, 8): 0}
 
 
-@pytest.mark.parametrize("key,value", [((16, 1), 3), ((16, 7), 3)])
+@pytest.mark.parametrize("key,value", [((16, 1), 3)])
 def test_incompatible_suction_or_preset_is_rejected_while_hot(key, value):
     with pytest.raises(ValueError):
         build_h15_write_plan(key, value, {(16, 8): 1})
@@ -46,11 +46,25 @@ def test_cleaning_preset_sets_matching_power_and_water(mode, power, water):
     }
 
 
-@pytest.mark.parametrize("key,value,siblings", [
-    ((1, 8), 3, (8, 81, 75)), ((1, 10), 3, (10, 82, 83)),
-])
-def test_wash_dry_preferences_match_all_three_app_profiles(key, value, siblings):
-    assert build_h15_write_plan(key, value, {}) == {(1, p): value for p in siblings}
+@pytest.mark.parametrize("key,value", [((1, 8), 3), ((1, 10), 3), ((1, 81), 3), ((1, 82), 3)])
+def test_wash_dry_preferences_preserve_companion_in_complete_app_batch(key, value):
+    props = {(1, 8): 2, (1, 10): 1, (1, 81): 2, (1, 82): 1}
+    wash, dry = (value, 1) if key[1] in (8, 81) else (2, value)
+    assert build_h15_write_plan(key, value, props) == {
+        (1, 8): wash, (1, 10): dry, (1, 81): wash,
+        (1, 82): dry, (1, 75): wash, (1, 83): dry,
+    }
+
+
+def test_wash_dry_never_guesses_missing_companion():
+    with pytest.raises(ValueError):
+        build_h15_write_plan((1, 10), 3, {})
+
+
+@pytest.mark.parametrize("mode,power,water", [(1, 1, 2), (3, 3, 3), (4, 1, 2)])
+def test_hot_water_does_not_prevent_app_preset_selection(mode, power, water):
+    plan = build_h15_write_plan((16, 7), mode, {(16, 8): 1})
+    assert plan == {(16, 7): mode, (16, 1): power, (16, 2): water, (16, 6): 1}
 
 
 def test_arm_mode_change_preserves_other_modes_and_unused_bit():
@@ -178,14 +192,11 @@ def test_legacy_h14_tables_still_match_previous_release():
     assert hashlib.sha256(payload.encode()).hexdigest() == '84eae2da91988d080a62f03367e61ac861a6fbe51e789227b1aa93c813aa8f38'
 
 
-@pytest.mark.parametrize('key,value,siblings', [
-    ((1, 75), 4, (8, 81, 75)), ((1, 81), 2, (8, 81, 75)),
-    ((1, 82), 3, (10, 82, 83)), ((1, 83), 1, (10, 82, 83)),
+@pytest.mark.parametrize("key,value,companion,current", [
+    ((1, 75), 4, (1, 83), 1), ((1, 83), 3, (1, 75), 2),
 ])
-def test_return_and_schedule_mode_selects_use_app_synced_write_plan(key, value, siblings):
-    from custom_components.dreame_wet_dry_vacuum.const import H15_SELECT_SETTINGS
-    assert key in H15_SELECT_SETTINGS
-    assert build_h15_write_plan(key, value, {}) == {(1, piid): value for piid in siblings}
+def test_scheduled_modes_preserve_companion_without_overwriting_manual_modes(key, value, companion, current):
+    assert build_h15_write_plan(key, value, {companion: current}) == {key: value, companion: current}
 
 
 def test_arm_select_preserves_reserved_bit_for_every_combination():
