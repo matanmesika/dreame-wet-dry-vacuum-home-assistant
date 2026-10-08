@@ -1,0 +1,11 @@
+# Paste into a manual Home Assistant dashboard card after loading the resource.
+type: custom:dreame-device-card
+model: H15
+language: en
+title: H15 Pro Heat
+
+# Optional: select a specific device using one of its actual entity IDs.
+# entity: sensor.REPLACE_WITH_YOUR_DEVICE_ENTITY
+
+# Optional: your own device image in config/www/.
+# image: /local/dreame-device.png

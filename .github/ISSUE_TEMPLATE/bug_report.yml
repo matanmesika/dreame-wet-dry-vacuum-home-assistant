@@ -1,0 +1,46 @@
+name: Bug report
+description: Report a reproducible integration or dashboard-card problem.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Do not include passwords, access tokens, account email addresses, device IDs,
+        serial numbers, MAC addresses, or unredacted diagnostic exports.
+  - type: input
+    id: integration_version
+    attributes:
+      label: Integration version or commit
+    validations:
+      required: true
+  - type: input
+    id: home_assistant_version
+    attributes:
+      label: Home Assistant version
+    validations:
+      required: true
+  - type: input
+    id: device_model
+    attributes:
+      label: Device model and firmware
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant redacted logs
+      description: Remove all personal identifiers, credentials, and tokens before posting.
+    validations:
+      required: false

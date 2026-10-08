@@ -1,11 +1,16 @@
-"""Sensor platform for Dreame wet & dry vacuum (dynamic, MQTT-driven)."""
+"""Sensor platform for Dreame wet & dry vacuum."""
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -16,9 +21,17 @@ from .const import (
     CONSUMABLE_SENSORS,
     DEVICE_STATUS,
     ERROR_DECODE,
+    H15_ERROR_FIELDS,
+    H15_GENERAL_SENSOR_KEYS,
+    H15_PROPERTY_META,
+    H15_SCHEDULE_DAYS,
+    H15_WARN_FIELDS,
     KNOWN_MQTT_PROPS,
     WARN_DECODE,
     decode_field_alerts,
+    decode_h15_alerts,
+    decode_schedule,
+    h15_sensor_is_optional,
 )
 from .coordinator import DreameWetDryCoordinator
 from .entity import build_device_info
@@ -43,16 +56,19 @@ async def async_setup_entry(
     entry: DreameWetDryConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    """Set up sensor entities."""
     coordinator: DreameWetDryCoordinator = entry.runtime_data
+
+    if coordinator.is_h15_pro_heat:
+        _setup_h15_sensors(coordinator, async_add_entities)
+        return
+
     added: set[tuple[int, int]] = set()
 
     @callback
     def _add_new(keys: set[tuple[int, int]]) -> None:
         entities = []
         for key in keys:
-            # Only create sensors for *recognised* properties. Props handled by
-            # another platform (switch/number/select/button) or not yet identified
-            # are intentionally not turned into generic "Propriété X.Y" sensors.
             if key in added or key not in KNOWN_MQTT_PROPS:
                 continue
             added.add(key)
@@ -63,19 +79,261 @@ async def async_setup_entry(
     coordinator.new_prop_callback = _add_new
     _add_new(set(KNOWN_MQTT_PROPS))
 
-    # Consumable life sensors: state = hours remaining (left / 60, no constant),
-    # with percent + minutes as attributes.
     async_add_entities(
-        DreameWetDryConsumableSensor(coordinator, meta) for meta in CONSUMABLE_SENSORS
+        DreameWetDryConsumableSensor(coordinator, meta)
+        for meta in CONSUMABLE_SENSORS
     )
 
 
-class DreameWetDrySensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntity):
-    """One sensor per (siid, piid) property."""
+def _decode_h15_mechanical_arm_2449(raw: Any) -> list[str]:
+    """Decode w2449e lifting-arm inverted mode bits from Dreame app logic."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return []
+
+    modes = (
+        (0, "Smart"),
+        (3, "Hot Water"),
+        (2, "Suction"),
+        (4, "Custom"),
+    )
+    return [name for bit, name in modes if ((value >> bit) & 1) == 0]
+
+
+def _setup_h15_sensors(
+    coordinator: DreameWetDryCoordinator,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Expose useful H15 telemetry; keep research properties in exports."""
+    added: set[tuple[int, int]] = set()
+
+    @callback
+    def _add_new(keys: set[tuple[int, int]]) -> None:
+        entities: list[SensorEntity] = []
+        for key in sorted(keys):
+            if key in added or h15_sensor_is_optional(key) or coordinator.props.get(key) in (None, -1, "-1"):
+                continue
+            added.add(key)
+            entities.append(DreameH15PropertySensor(coordinator, key))
+        if entities:
+            async_add_entities(entities)
+
+    coordinator.new_prop_callback = _add_new
+    _add_new(set(coordinator.props))
+    async_add_entities([DreameH15MappingChangesSensor(coordinator),
+                        *(DreameWetDryConsumableSensor(coordinator, meta, percentage=percentage)
+                          for meta in CONSUMABLE_SENSORS
+                          if meta["key"] != "back_brush" or coordinator.props.get((7, 7), -1) >= 0
+                          for percentage in (False, True))])
+
+    _LOGGER.info(
+        "Created %d H15 Pro Heat property sensors for model=%s",
+        len(added),
+        coordinator.model,
+    )
+
+
+class DreameH15MappingChangesSensor(
+    CoordinatorEntity[DreameWetDryCoordinator], SensorEntity
+):
+    """Show the result of the last explicit H15 mapping snapshot comparison."""
+
+    _attr_has_entity_name = True
+    _attr_entity_registry_enabled_default = False
+    _attr_name = "Mapping changes"
+    _attr_icon = "mdi:compare"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: DreameWetDryCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_h15_mapping_changes"
+        self._attr_device_info = build_device_info(coordinator)
+
+    @property
+    def native_value(self) -> int:
+        return len(self.coordinator.h15_last_changes)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        changes = self.coordinator.h15_last_changes
+        attrs: dict[str, Any] = {
+            "model": self.coordinator.model,
+            "changed_properties": list(changes),
+            "changes": changes,
+        }
+        if self.coordinator.h15_last_scan is not None:
+            attrs["last_scan"] = self.coordinator.h15_last_scan.isoformat()
+        return attrs
+
+
+class DreameH15PropertySensor(
+    CoordinatorEntity[DreameWetDryCoordinator], SensorEntity
+):
+    """Read-only H15 property sensor.
+
+    Confirmed/candidate names come from the model profile. Anything not mapped
+    remains a Raw SIID.PIID sensor instead of inheriting H14 semantics.
+    """
 
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: DreameWetDryCoordinator, key: tuple[int, int]) -> None:
+    def __init__(
+        self,
+        coordinator: DreameWetDryCoordinator,
+        key: tuple[int, int],
+    ) -> None:
+        super().__init__(coordinator)
+        self._key = key
+        self._data_key = f"{key[0]}.{key[1]}"
+        self._meta = H15_PROPERTY_META.get(key, {})
+
+        # H15-specific IDs prevent old H14 sensor semantics from being reused.
+        self._attr_unique_id = (
+            f"{coordinator.device_id}_h15_property_{key[0]}_{key[1]}"
+        )
+        self._attr_name = self._meta.get("name", f"Raw {self._data_key}")
+        self._attr_icon = self._meta.get("icon", "mdi:code-tags")
+        self._attr_device_info = build_device_info(coordinator)
+
+        self._attr_entity_category = (
+            None if key in H15_GENERAL_SENSOR_KEYS else EntityCategory.DIAGNOSTIC
+        )
+        if h15_sensor_is_optional(key) or coordinator.props.get(key) == -1:
+            self._attr_entity_registry_enabled_default = False
+
+        device_class = self._meta.get("device_class")
+        if device_class == "battery":
+            self._attr_device_class = SensorDeviceClass.BATTERY
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        elif device_class == "duration":
+            self._attr_device_class = SensorDeviceClass.DURATION
+        elif device_class == "timestamp":
+            self._attr_device_class = SensorDeviceClass.TIMESTAMP
+
+        state_class = self._meta.get("state_class")
+        if state_class == "measurement":
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        elif state_class == "total_increasing":
+            self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+        if unit := self._meta.get("unit"):
+            self._attr_native_unit_of_measurement = unit
+
+    @property
+    def native_value(self) -> Any:
+        raw = self.coordinator.data.get(self._data_key)
+        if raw is None:
+            return None
+
+        if self._meta.get("timestamp"):
+            try:
+                return datetime.fromtimestamp(float(raw), UTC) if float(raw) > 0 else None
+            except (TypeError, ValueError, OverflowError, OSError):
+                return None
+        if self._meta.get("remaining_time") and raw in (-1, "-1"):
+            return None
+
+        # Lists/dicts are valid raw Dreame values, but HA sensor state itself
+        # must be scalar. Preserve the exact value in raw_value attributes.
+        if isinstance(raw, (list, dict, tuple)):
+            return json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+
+        if self._meta.get("decoder") in {"warnings", "errors"}:
+            fields = H15_WARN_FIELDS if self._key == (4, 1) else H15_ERROR_FIELDS
+            alerts = decode_h15_alerts(raw, fields)
+            return len(alerts) if alerts is not None else None
+        if self._meta.get("decoder") == "schedule":
+            try:
+                schedule = decode_schedule(int(raw))
+                return "Off" if not schedule["enabled"] else "Once" if schedule["once"] else ", ".join(H15_SCHEDULE_DAYS[day] for day in schedule["days"])
+            except (ValueError, TypeError):
+                return f"Unknown ({raw})"
+
+        value_map = self._meta.get("value_map")
+        if isinstance(value_map, dict):
+            try:
+                numeric = int(raw)
+            except (TypeError, ValueError):
+                return str(raw)
+            return value_map.get(numeric, f"Unknown ({raw})")
+
+        if self._meta.get("decoder") == "mechanical_arm_2449":
+            modes = _decode_h15_mechanical_arm_2449(raw)
+            if len(modes) == 4:
+                return "All modes"
+            return ", ".join(modes) if modes else "None"
+
+        return raw
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        raw = self.coordinator.data.get(self._data_key)
+        attrs: dict[str, Any] = {
+            "model": self.coordinator.model,
+            "siid": self._key[0],
+            "piid": self._key[1],
+            "property": self._data_key,
+            "mapping_status": self._meta.get("confidence", "unmapped"),
+            "raw_value": raw,
+        }
+
+        if self._meta.get("decoder") in {"warnings", "errors"}:
+            fields = H15_WARN_FIELDS if self._key == (4, 1) else H15_ERROR_FIELDS
+            attrs["active_alerts"] = decode_h15_alerts(raw, fields)
+            attrs["mapping_source"] = "Dreamehome warnVersion=2 (w2449e)"
+
+        if note := self._meta.get("note"):
+            attrs["mapping_note"] = note
+
+        value_map = self._meta.get("value_map")
+        if isinstance(value_map, dict):
+            attrs["known_values"] = {
+                str(key): value for key, value in value_map.items()
+            }
+
+        if self._meta.get("decoder") == "mechanical_arm_2449" and raw is not None:
+            attrs["selected_modes"] = _decode_h15_mechanical_arm_2449(raw)
+            attrs["bit_semantics"] = {
+                "0": "Smart selected when bit=0",
+                "3": "Hot Water selected when bit=0",
+                "2": "Suction selected when bit=0",
+                "4": "Custom selected when bit=0",
+            }
+
+        if self._meta.get("bitfield") and raw is not None:
+            try:
+                value = int(raw)
+                attrs["active_bits"] = [
+                    1 << bit for bit in range(32) if value & (1 << bit)
+                ]
+            except (TypeError, ValueError):
+                pass
+
+        if self._meta.get("remaining_time") and raw is not None:
+            try:
+                minutes = int(raw)
+                if minutes >= 0:
+                    attrs["hours_remaining"] = round(minutes / 60, 1)
+            except (TypeError, ValueError):
+                pass
+
+        return attrs
+
+
+class DreameWetDrySensor(
+    CoordinatorEntity[DreameWetDryCoordinator], SensorEntity
+):
+    """One legacy/H14 sensor per (siid, piid) property."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: DreameWetDryCoordinator,
+        key: tuple[int, int],
+    ) -> None:
         super().__init__(coordinator)
         self._key = key
         self._data_key = f"{key[0]}.{key[1]}"
@@ -90,6 +348,7 @@ class DreameWetDrySensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntit
         self._attr_unique_id = f"{coordinator.device_id}_{self._data_key}"
         self._attr_translation_key = meta["key"]
         self._attr_icon = meta.get("icon")
+
         if dc := _DEVICE_CLASSES.get(meta.get("device_class")):
             self._attr_device_class = dc
         if sc := _STATE_CLASSES.get(meta.get("state_class")):
@@ -118,7 +377,7 @@ class DreameWetDrySensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntit
             return None
         if self._is_timestamp:
             try:
-                return datetime.fromtimestamp(int(raw), tz=timezone.utc)
+                return datetime.fromtimestamp(int(raw), tz=UTC)
             except (ValueError, TypeError, OSError):
                 return None
         if self._is_enum:
@@ -126,7 +385,6 @@ class DreameWetDrySensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntit
                 return DEVICE_STATUS.get(int(raw), str(raw))
             except (ValueError, TypeError):
                 return str(raw)
-        # Lists we don't reduce: present as string to stay valid
         if isinstance(raw, list):
             return ", ".join(str(x) for x in raw)
         return raw
@@ -140,43 +398,56 @@ class DreameWetDrySensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntit
         if self._is_bitmask and raw is not None:
             try:
                 ival = int(raw)
-                bits = [b for b in range(32) if ival & (1 << b)]
-                attrs["active_bits"] = [1 << b for b in bits]
+                bits = [bit for bit in range(32) if ival & (1 << bit)]
+                attrs["active_bits"] = [1 << bit for bit in bits]
                 if self._decode and self._decode in _DECODE_TABLES:
-                    attrs["alerts"] = decode_field_alerts(ival, _DECODE_TABLES[self._decode])
+                    attrs["alerts"] = decode_field_alerts(
+                        ival, _DECODE_TABLES[self._decode]
+                    )
             except (ValueError, TypeError):
                 pass
         return attrs
 
 
-class DreameWetDryConsumableSensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntity):
-    """Consumable remaining life. State = hours remaining (minutes / 60, no
-    constant). Percentage is exposed as an attribute, using the device's `max`
-    property when available, otherwise the documented full-life fallback."""
+class DreameWetDryConsumableSensor(
+    CoordinatorEntity[DreameWetDryCoordinator], SensorEntity
+):
+    """Remaining life: H15 percentage, legacy/H14 hours."""
 
     _attr_has_entity_name = True
     _attr_native_unit_of_measurement = "h"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator: DreameWetDryCoordinator, meta: dict) -> None:
+    def __init__(self, coordinator: DreameWetDryCoordinator, meta: dict, *, percentage: bool = False) -> None:
         super().__init__(coordinator)
+        self._percentage = percentage and coordinator.is_h15_pro_heat
         self._left_key = meta["left"]
         self._max_key = meta["max"]
-        self._full_life_min = meta["full_life_min"]
-        self._attr_unique_id = f"{coordinator.device_id}_consumable_{meta['key']}"
-        self._attr_translation_key = f"consumable_{meta['key']}"
+        self._full_life_min = 0 if coordinator.is_h15_pro_heat else meta["full_life_min"]
+        if coordinator.is_h15_pro_heat:
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        if self._percentage:
+            self._attr_native_unit_of_measurement = "%"
+        self._attr_unique_id = (
+            f"{coordinator.device_id}_consumable_{meta['key']}"
+            + ("_percent" if self._percentage else "")
+        )
+        self._attr_translation_key = f"consumable_{meta['key']}" + ("_percent" if self._percentage else "")
         self._attr_icon = meta.get("icon")
         self._attr_device_info = build_device_info(coordinator)
 
     def _left_minutes(self) -> int | None:
         try:
-            return int(self.coordinator.data.get(self._left_key))
+            value = int(self.coordinator.data.get(self._left_key))
+            return None if self.coordinator.is_h15_pro_heat and value < 0 else value
         except (ValueError, TypeError):
             return None
 
     @property
     def native_value(self) -> float | None:
         left = self._left_minutes()
+        if self._percentage:
+            return self.extra_state_attributes.get("percent_remaining")
         return None if left is None else round(left / 60, 1)
 
     @property
@@ -184,19 +455,27 @@ class DreameWetDryConsumableSensor(CoordinatorEntity[DreameWetDryCoordinator], S
         left = self._left_minutes()
         if left is None:
             return {}
+
         raw_max = self.coordinator.data.get(self._max_key)
         try:
             full = int(raw_max)
         except (ValueError, TypeError):
             full = -1
+
         from_device = full > 0
         if not from_device:
             full = self._full_life_min
+
         attrs: dict[str, Any] = {
             "minutes_remaining": left,
             "full_life_hours": round(full / 60, 1),
-            "full_life_source": "device" if from_device else "défaut (60 h)",
+            "full_life_source": "device" if from_device else "unknown" if self.coordinator.is_h15_pro_heat else "default (60 h)",
         }
+        if full <= 0 and self.coordinator.is_h15_pro_heat:
+            attrs.pop("full_life_hours")
         if full > 0:
-            attrs["percent_remaining"] = max(0, min(100, round(left / full * 100)))
+            attrs["percent_remaining"] = max(
+                0, min(100, (left * 100 // full) if self.coordinator.is_h15_pro_heat
+                       else round(left / full * 100))
+            )
         return attrs

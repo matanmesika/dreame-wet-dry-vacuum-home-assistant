@@ -1,0 +1,11 @@
+# Paste into the raw configuration editor of a NEW dashboard.
+# Keep your existing dashboards unchanged. Load the JS resource first.
+title: Dreame
+views:
+  - title: Wet & Dry Vacuum
+    path: dreame
+    icon: mdi:vacuum
+    cards:
+      - type: custom:dreame-device-card
+        language: en
+        title: H15 Pro Heat
