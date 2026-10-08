@@ -88,7 +88,7 @@ jobs:
         run: >-
           git archive --format=zip --output=dreame-wet-dry-vacuum-review.zip
           HEAD custom_components/dreame_wet_dry_vacuum README.md H15_MAPPING.md
-          INSTALL_HE.md LICENSE tests pyproject.toml www
+          CONTRIBUTING.md SECURITY.md info.md INSTALL_HE.md LICENSE tests pyproject.toml www
       - name: Upload review bundle (not a release)
         uses: actions/upload-artifact@v4
         with:

@@ -2,14 +2,15 @@
   "domain": "dreame_wet_dry_vacuum",
   "name": "Dreame Wet & Dry Vacuum",
   "codeowners": [
-    "@morcus"
+    "@morcus",
+    "@matanmesika"
   ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/morcus/dreame-wet-dry-vacuum-home-assistant",
+  "documentation": "https://github.com/matanmesika/dreame-wet-dry-vacuum-home-assistant",
   "integration_type": "device",
   "iot_class": "cloud_push",
-  "issue_tracker": "https://github.com/morcus/dreame-wet-dry-vacuum-home-assistant/issues",
+  "issue_tracker": "https://github.com/matanmesika/dreame-wet-dry-vacuum-home-assistant/issues",
   "loggers": [
     "paho.mqtt"
   ],

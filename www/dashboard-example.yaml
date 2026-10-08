@@ -2,12 +2,12 @@
 # Keep your existing dashboards unchanged. Load the JS resource first.
 title: Dreame
 views:
-  - title: שואב־שוטף
+  - title: Wet & Dry Vacuum
     path: dreame
     icon: mdi:vacuum
     cards:
       - type: custom:dreame-device-card
-        language: he
+        language: en
         title: H15 Pro Heat
         # Optional: choose the device using its real vacuum entity ID.
         # entity: vacuum.REPLACE_WITH_YOUR_ENTITY

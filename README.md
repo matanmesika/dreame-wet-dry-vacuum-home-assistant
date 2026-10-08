@@ -1,286 +1,106 @@
-# Dreame Wet & Dry Vacuum — Home Assistant integration
+# Dreame Wet & Dry Vacuum for Home Assistant
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![HACS](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://www.hacs.xyz/)
+[![Validate](https://github.com/matanmesika/dreame-wet-dry-vacuum-home-assistant/actions/workflows/validate.yml/badge.svg?branch=feature%2Fh15-country-discovery)](https://github.com/matanmesika/dreame-wet-dry-vacuum-home-assistant/actions/workflows/validate.yml)
 
-A custom [Home Assistant](https://www.home-assistant.io/) integration for **Dreame wet & dry stick vacuums**, developed and tested against the **Dreame H14 Pro** (`dreame.hold.w2306e`).
+An unofficial Home Assistant custom integration for supported Dreame wet and dry vacuums. It connects to Dreame cloud services and exposes device state, controls, alerts, and maintenance through Home Assistant entities. A companion Lovelace card is included in `www/` for users who want a compact, theme-aware dashboard.
 
-It connects to the Dreame cloud, authenticates with your Dreame account, and exposes the device's status, statistics, consumables, alerts and settings as Home Assistant entities. Live state updates are delivered through the cloud **MQTT push** feed, with a periodic web poll as a fallback.
+> **Status:** Work in progress. H14 behavior is kept on its existing mapping path. H15 Pro Heat (`dreame.hold.w2449e`) is being validated separately; its sensor map and some write/readback behavior are not complete. Unknown values stay unknown. Do not rely on this integration for safety-critical tasks.
 
-> ⚠️ This is an **unofficial** integration. It is not affiliated with, endorsed by, or supported by Dreame. Use at your own risk. The cloud API is undocumented and may change at any time.
+This community project is not affiliated with or supported by Dreame. It uses undocumented cloud interfaces that can change without notice.
 
----
+## What it provides
 
-## Features
+- Cloud account setup with automatic country selection from Home Assistant and an optional server override.
+- Device status, battery, connection state, supported alerts, and maintenance entities.
+- Model-aware controls and entities, preserving legacy H14 mappings while adding a separate H15 profile.
+- H15 wash/dry and cleaning settings where the command path is known, with raw values retained for diagnosis when interpretation is not verified.
+- A Lovelace dashboard card with operation, device status, maintenance, theme-aware colors, and manually selectable entities.
 
-This is a *wet & dry stick* vacuum. H15 Pro Heat also exposes a primary **`vacuum` entity** for Home Assistant's built-in control dialog. Existing H14 entities and mappings remain unchanged. The integration continues to expose detailed settings and maintenance through standard entity platforms:
-
-### Native H15 vacuum control (experimental)
-- The entity belongs to the existing device and uses its device name.
-- Start performs **dock self-cleaning**, or resumes paused self-cleaning; it does not remotely start manual floor cleaning. Stop routes to the reported self-cleaning or drying task.
-- Suction choices use the existing guarded H15 setting path and are offered only when hot-water mode is off.
-- The existing battery sensor supplies battery information to modern HA dialogs; battery attributes also support older dialogs.
-- Attributes include the exact work mode (including drying), wash/dry settings, warnings, errors and reported brush/filter remaining time. Percentages require a reported maximum; unsupported values remain unknown.
-- The built-in dialog follows the active HA theme. Its layout is controlled by HA; this does not add custom tabs or the full dashboard. Detailed selects, volume slider, drying buttons and maintenance reset buttons remain on the device.
-- No return-home, locate, robot map or area-cleaning capability is advertised. Sleeping alone is not labelled docked. Mapping and physical validation remain incomplete; no new release is assigned.
-
-### Sensors
-- **State** — current activity (mopping, drying, self-cleaning, charging, …)
-- **Battery** level (%)
-- **Washing / drying progress** levels (real-time, MQTT only)
-- **Totals & history** — total run time, total clean count, last clean time and duration, self-clean / self-dry totals (diagnostic)
-- **Consumables** — front/back roller brushes and filter: hours remaining, with % and minutes as attributes
-- **Water level** and **suction mode**
-
-### Binary sensors (alerts)
-- Clean-water tank empty
-- Detergent empty
-- Dirty-water tank full / missing / needs cleaning
-- Self-cleaning recommended (dirty brush/tube)
-- Auto-detergent state
-
-### Switches
-- Light, auto detergent mixing, automatic rinse, automatic drying, timed dry after cleaning, custom mode
-
-### Numbers
-- Voice volume, timed-dry duration, and custom-mode settings (suction power, water flow, brush speed)
-
-### Selects
-- Traction force (light / balanced / strong)
-
-### Buttons
-- Start self-cleaning
-- Start self-drying
-
-> Some controls are *optimistic*: the device does not report their current value back, so the entity reflects the last command you sent.
-
-Entity names are translated (English and French) and follow your Home Assistant UI language.
-
----
+Availability depends on the model, firmware, installed accessories, and the values reported by Dreame. A field documented as plugin-derived or candidate is not the same as a confirmed device mapping. Consult [H15_MAPPING.md](H15_MAPPING.md) before using H15 settings. Some writes require physical verification and the device may not confirm a command.
 
 ## Requirements
 
-- Home Assistant **2025.1.0** or newer
-- A **Dreame** account (the same one you use in the Dreamehome app) with your vacuum already added
-- Network access from Home Assistant to the Dreame cloud. Known Dreame cloud endpoints supported by this integration: `eu`, `de`, `cn`, `us`, `ru`, `tw`, `sg`, `in`, `i2`, and `kr`.
+- Home Assistant 2025.1.0 or newer.
+- A Dreamehome account with a supported wet and dry vacuum already added.
+- Network access from Home Assistant to the relevant Dreame cloud services.
 
-Python dependencies (`pycryptodome`, `paho-mqtt`) are installed automatically by Home Assistant from the integration's `manifest.json`.
+The integration declares its Python runtime dependencies in `manifest.json`; Home Assistant installs them automatically.
 
----
+## Install the integration
 
-## Installation
+### HACS custom repository
 
-### Option A — HACS (recommended)
+The repository is prepared as a HACS **Integration**. Until it is accepted into the HACS default list:
 
-1. Make sure [HACS](https://hacs.xyz/) is installed.
-2. In Home Assistant go to **HACS → Integrations → ⋮ (top-right) → Custom repositories**.
-3. Add this repository:
-   - **Repository:** `https://github.com/morcus/dreame-wet-dry-vacuum-home-assistant`
-   - **Category:** `Integration`
-4. Find **Dreame Wet & Dry Vacuum** in the HACS list and click **Download**.
-5. **Restart Home Assistant.**
+1. In Home Assistant, open **HACS → Integrations → ⋮ → Custom repositories**.
+2. Add `https://github.com/matanmesika/dreame-wet-dry-vacuum-home-assistant` with category **Integration**.
+3. Download **Dreame Wet & Dry Vacuum** and restart Home Assistant.
+4. Open **Settings → Devices & services → Add integration**, find **Dreame Wet & Dry Vacuum**, and follow the sign-in flow.
 
-Once this repository is published to the [HACS default store](https://hacs.xyz/docs/publish/include), steps 2–3 will no longer be needed — it will be searchable directly in HACS.
+The bundled dashboard card is a separate frontend resource. HACS installing the integration does **not** install the card automatically; follow the next section if you want the dashboard.
 
-### Option B — Manual
+### Manual integration install
 
-1. Copy the folder `custom_components/dreame_wet_dry_vacuum/` into your Home Assistant `config/custom_components/` directory.
-2. **Restart Home Assistant.**
+Copy `custom_components/dreame_wet_dry_vacuum/` into `<HA config>/custom_components/dreame_wet_dry_vacuum/`, then restart Home Assistant and add the integration from **Settings → Devices & services**.
 
----
+## Install the dashboard card
 
-## Configuration
+The dashboard card is optional and can be installed independently of the integration:
 
-1. Go to **Settings → Devices & Services → Add Integration**.
-2. Search for **Dreame Wet & Dry Vacuum**.
-3. Enter your **Dreame account email** and **password**. The country is taken automatically from Home Assistant's configuration and is not shown as a separate field. Only if the system has no configured country is a manual country selector shown; there is no hardcoded account-country fallback.
-4. Leave **Cloud server** on **Automatic** unless you need to override it manually.
-5. If your account has more than one device, pick the vacuum you want to add.
+1. Copy `www/dreame-device-card.js` to `<HA config>/www/community/Dreame-device-card/dreame-device-card.js`.
+2. In **Settings → Dashboards → Resources**, add `/local/community/Dreame-device-card/dreame-device-card.js` as a JavaScript module. For YAML-managed dashboards, add the same URL under `resources` with `type: module`.
+3. Add a manual card using [www/card-example.yaml](www/card-example.yaml), or start from [www/dashboard-example.yaml](www/dashboard-example.yaml).
+4. Hard refresh the browser after replacing the JS file.
 
-In Automatic mode the integration performs one password login against a safe bootstrap backend selected from the account country (Europe for most countries). If Dreame returns the account's real `region` or `domain` in the login response, that backend is used immediately and other backends are not probed. Without authoritative backend metadata, an empty first device list permits one bounded search of the known regional device-list endpoints using the already-issued bearer token. That search is not repeated on subsequent periodic snapshots from the same client; it does **not** repeatedly submit the user's password to every server.
+The card follows Home Assistant theme variables and supports light/dark themes. English is the example/default display language; Hebrew can be selected explicitly. Device and entity names are read from Home Assistant. You can choose a device or provide entity IDs in card configuration. See [www/README_HE.md](www/README_HE.md) for the current Hebrew card guide.
 
-The cloud server and account country are deliberately separate. Dreame accounts can use a regional backend that does not match the literal ISO country code. New connections use the system country; existing stored account countries and manual server selections are preserved. Manual server choices remain available for troubleshooting.
+This repository is currently a HACS **Integration** repository. HACS lists dashboard cards as a separate **Dashboard** category, so the card cannot be listed as an independent HACS dashboard product from this same repository. A separate card repository with its own package metadata and checks is required for that submission.
 
-The integration creates one device with all of its entities. State is updated in real time via MQTT, with a web poll every 5 minutes as a safety net.
+## Configuration and data handling
 
-### H15 Pro Heat validation profile
+- The login flow asks for the Dreame account credentials. Country selection is taken from Home Assistant when available; there is no hard-coded Israel/account-country fallback.
+- Automatic server discovery prefers authoritative region/domain data returned during login. Bounded regional discovery is used only if needed; the integration does not continuously submit the password to every region.
+- Account credentials and cloud tokens are held by Home Assistant's config-entry storage and are not written to diagnostic exports.
+- Diagnostics redact identifiers and credentials before export. Review an export before sharing it publicly because device state and model/firmware metadata may still be present.
+- Cloud/MQTT delivery is used when available, with periodic HTTP polling as a fallback.
 
-The consolidated **work-in-progress** test build is documented in [H15_MAPPING.md](H15_MAPPING.md). Manual installation and device validation steps in Hebrew are in [INSTALL_HE.md](INSTALL_HE.md). The diagnostic export includes version/time markers, the full mapping profile and scan differences.
+## H15 mapping status
 
-This branch contains an active validation profile for the **Dreame H15 Pro Heat**
-model `dreame.hold.w2449e`.
+H15 mappings and evidence are recorded in [H15_MAPPING.md](H15_MAPPING.md). The integration distinguishes confirmed, plugin-derived, candidate, and unmapped values. English names and enum labels are used in the mapping profile. Unverified meanings are not inferred from H14. The profile is incomplete pending vendor information and controlled device tests.
 
-The profile is based on two sources: properties observed from the real H15 through
-Dreame cloud/MQTT, and the Dreamehome app packages returned by the account for this
-model (common plugin **728** plus H15 resource package **7**). Mappings are marked
-as confirmed, plugin-derived, candidate, or unmapped so H14 assumptions are not
-silently reused.
+In particular, water-tank status and alert readback are exposed only where the observed value has a verified interpretation. Do not treat an absent warning, `-1`, an empty response, or an unknown enum as proof that a tank is installed, empty, or full. Maintenance percentages are shown only when a valid device maximum is available; no guessed service interval is substituted for unknown H15 data.
 
-For H15 the coordinator now:
+The supported H15 commands are limited to settings and maintenance actions present in the integration. Every command should be checked in the Home Assistant state and on the physical device. The integration reports failed or unconfirmed writes rather than claiming the device accepted them.
 
-- scans **SIID 1-40 plus SIID 100 / PIID 1-120** during initial mapping discovery;
-- performs targeted read-only `get_properties` requests for app-defined keys that
-  may be absent from the cloud cache;
-- exposes useful reported telemetry and primary settings; research fields stay in exports;
-- decodes known H15 enums while preserving the exact raw value in entity attributes;
-- retains unknown properties in diagnostic exports without creating extra daily sensors;
-- refreshes only discovered properties during the normal five-minute safety poll;
-- accepts new MQTT properties dynamically without a restart.
+## Testing and development
 
-Current H15 mappings include battery and work mode, self-clean/dry settings and
-scheduled wash/dry properties, voice volume/language identifiers, roller/filter
-remaining life, personalized suction/water/cleaning/hot-water modes, GlideWheel
-traction, lifting robotic-arm mode bits, and smart drying/moisture settings.
-
-Two diagnostic buttons are available on H15:
-
-- **Refresh mapping snapshot** — performs a fresh read-only scan and reports exact
-  old/new property changes through the **Mapping changes** diagnostic sensor.
-- **Export Dreame app metadata** — downloads the app plugin/resource package and
-  writes a privacy-redacted `metadata_share.json` under
-  `/config/dreame_h15_probe/` for mapping analysis.
-
-Unverified H14 writable controls and H14 alert/charging decoding remain suppressed
-on H15. Version work-in-progress uses the existing modules: mappings in `const.py`,
-shared entity support in `entity.py`, device calls and exports in `api.py`, and
-concrete entities in the existing platforms. No additional model-specific Python
-files are required. H14 tables and legacy controls retain their behavior.
-
-H15 daily controls include 11 primary selects, switches and two numeric settings. Redundant mode copies and unsupported settings are not separate primary entities. These cover
-cleaning/suction/water/heat settings, self-cleaning and drying modes, traction,
-smart drying, detergent preferences, installed voice language, volume, and
-scheduled wash/dry time and weekdays. Volume follows the app's 0/30/60 levels;
-schedule time is entered in minutes after midnight with an HH:MM attribute.
-
-Buttons start/resume/stop self-cleaning, start/stop drying, and reset roller/filter
-life using actual device commands. An optional rear-brush reset is disabled when
-unsupported. Two-direction app control is available as bounded 0.3-second pulses
-only when the device reports horizontal and online, with an explicit stop on
-failure/cancellation. Six-direction robot control is unsupported by this model.
-
-The H15 app's warnVersion=2 tables decode warnings and errors. Eleven relevant tank/accessory alerts have dedicated entities; the remaining messages are retained in aggregate warning/error attributes. Water-tank conditions are
-physical device telemetry, not manually reset counters. Consumable counters update
-only from device readback after a reset. Unknown values are retained for mapping.
-
-Unit tests pass; physical-device and full Home Assistant runtime validation are
-still required. This work-in-progress is a draft validation build; sensor mapping remains incomplete while awaiting Dreame engineering feedback. Firmware/account management and complete cleaning-history retrieval are
-outside this control build; unresolved telemetry remains diagnostic.
-
-Properties without verified H15 meaning remain in diagnostic exports for controlled one-setting-at-a-time tests.
-
----
-
-## HACS compatibility — what's required & what's done
-
-For reference, here is the checklist HACS uses to validate a custom **integration** repository, and how this project meets it.
-
-| Requirement | Status | Notes |
-|---|---|---|
-| Integration lives in `custom_components/<domain>/` | ✅ | `custom_components/dreame_wet_dry_vacuum/` |
-| `manifest.json` with `domain`, `name`, `version` | ✅ | required for custom integrations |
-| `manifest.json` `documentation` URL | ✅ | points to this repository |
-| `manifest.json` `issue_tracker` URL | ✅ | points to the GitHub issues page |
-| `manifest.json` `codeowners` | ✅ | `["@morcus"]` |
-| `hacs.json` in repository root | ✅ | `name`, `content_in_root: false`, `render_readme`, `homeassistant` |
-| `README.md` in repository root | ✅ | this file (`render_readme: true`) |
-| `LICENSE` in repository root | ✅ | The Unlicense (public domain) |
-| CI validation (HACS Action + hassfest) | ✅ | `.github/workflows/validate.yml` |
-| Brand assets (`brand/icon.png`) | ✅ | local **placeholder** icon — see note below |
-| Repository is **public** on GitHub | ✅ | set to *Public* |
-| GitHub repository **description** is set | ✅ | set in the repo's *About* section |
-| GitHub repository **topics** | ✅ | `home-assistant`, `hacs`, `dreame`, `vacuum`, … |
-| At least one **release / tag** | ✅ | [`v0.1.0`](https://github.com/morcus/dreame-wet-dry-vacuum-home-assistant/releases/tag/v0.1.0) |
-
-> **Brand icon note:** `custom_components/dreame_wet_dry_vacuum/brand/icon.png` is a neutral, generated **placeholder** (a generic water-drop glyph) so the HACS *brands* check passes. It is **not** the Dreame logo. Replace it with a logo you have the rights to use, or — the recommended route — register the integration in the [home-assistant/brands](https://github.com/home-assistant/brands) repository, which both Home Assistant and HACS pick up automatically.
-
-### Optional: getting into the default HACS store
-
-To make the integration installable without adding it as a custom repository, submit it to the [HACS default repositories](https://hacs.xyz/docs/publish/include):
-
-1. Ensure all ✅/⬜ items above are satisfied (public repo, description, topics, a release, and a passing structure).
-2. Run the [HACS Action](https://github.com/hacs/action) and the [hassfest](https://developers.home-assistant.io/blog/2020/04/16/hassfest/) checks in CI (recommended — see below).
-3. Open a PR against [`hacs/default`](https://github.com/hacs/default) adding your repository.
-
-### Recommended: validation workflows
-
-Add GitHub Actions so HACS and Home Assistant structure are validated on every push. Create `.github/workflows/validate.yml`:
-
-```yaml
-name: Validate
-
-on:
-  push:
-  pull_request:
-  schedule:
-    - cron: "0 0 * * *"
-
-jobs:
-  hacs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hacs/action@main
-        with:
-          category: integration
-
-  hassfest:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: home-assistant/actions/hassfest@master
-```
-
----
-
-## Development
-
-Unit tests (no Home Assistant install required) and linting:
+Run local checks from the repository root:
 
 ```bash
-pip install pytest ruff aiohttp pycryptodome "paho-mqtt>=2.0"
-pytest
+python -m compileall -q custom_components
 ruff check custom_components tests
+pytest -q
+node --check www/dreame-device-card.js
+node --test tests/test_device_card.cjs
 ```
 
-Both run in CI on every push, alongside the HACS and hassfest validations.
+GitHub Actions runs HACS validation, Home Assistant `hassfest`, Ruff, Python tests on supported CI interpreters, and dashboard-card checks. A review ZIP is produced only after those jobs pass. A passing CI build does not replace physical-device validation.
 
----
+See [CONTRIBUTING.md](CONTRIBUTING.md) for change and test expectations and [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
-## Versioning
+## HACS publication status
 
-The integration version lives in `custom_components/dreame_wet_dry_vacuum/manifest.json`. When you publish a new GitHub release, bump that version to match the release tag so HACS can track updates.
+This public repository is being prepared for HACS review. No new release tag or GitHub release is being created while H15 mapping and physical validation are still in progress. HACS can use the default branch for custom-repository integration installs; adding the integration to HACS's default list has additional gates, including a passing HACS Action and `hassfest`, a public repository with a description, issues and topics enabled, an integration brand, and a full GitHub release. The release requirement applies to the default-list request, so that request is deferred until the mapping is ready and you authorize a versioned release.
 
----
+Before a HACS default-list submission, update the repository's GitHub **About** settings:
 
-## Troubleshooting
+- **Description:** `Unofficial Home Assistant integration for Dreame wet & dry vacuums, with model-aware controls and an optional Lovelace dashboard card.`
+- **Topics:** `home-assistant`, `home-assistant-custom-component`, `hacs`, `dreame`, `vacuum`, `wet-dry-vacuum`.
+- **Issues:** enable GitHub Issues (currently disabled on the repository).
 
-- **`invalid_auth`** — wrong email/password, or wrong region. Make sure you can sign in to the Dreamehome app with the same credentials.
-- **`cannot_connect`** — Home Assistant cannot reach the Dreame cloud; check connectivity and the selected region.
-- **`no_devices`** — the account has no compatible device. Confirm the vacuum is added to that Dreame account.
-- Enable debug logging to investigate:
+The local integration brand asset exists. HACS checks for `custom_components/dreame_wet_dry_vacuum/brand/icon.png`; the default-list check can also use a registered Home Assistant brand. The card itself must use a separate HACS Dashboard repository if you want it independently discoverable in that HACS category.
 
-  ```yaml
-  logger:
-    default: warning
-    logs:
-      custom_components.dreame_wet_dry_vacuum: debug
-  ```
+## Support
 
----
-
-## Disclaimer
-
-This project is provided "as is", without warranty of any kind. It uses an unofficial, reverse-engineered cloud API and may break at any time if Dreame changes their service. Credentials are stored by Home Assistant and used only to talk to the Dreame cloud.
-
----
-
-## License
-
-Released into the **public domain** under [The Unlicense](LICENSE). Do whatever you want with it — copy, modify, publish, sell, fork — no attribution required.
-
-### work-in-progress device layout and voice volume
-
-The H15 remains one device: **Controls** for operation and preferences, **Sensors** for general telemetry, **Diagnostic** for maintenance and alerts. These are native HA headings, not custom titles. Optional raw diagnostics are disabled once on upgrade and can be re-enabled. IDs and H14 mappings are preserved. Voice volume is a three-position slider: 0 Silent, 1 Low, 2 High, sending device values 0, 30, 60. **Sensor mapping remains incomplete.** This draft build awaits Dreame engineering feedback and further physical device validation; the device-page presentation also needs further refinement.
-
-### Work-in-progress CI and review bundles
-
-Pushes, pull requests and manual workflow dispatch run HACS, hassfest, Ruff, component compilation and the unit-test suite on Python 3.12 and 3.13. JUnit reports are retained for 14 days, including failed runs. Only after all validation jobs pass is a commit-specific review ZIP created, containing the integration, mapping/installation documentation and tests. This is a test artifact, not a GitHub Release; no version tag or release publication occurs. Physical device testing and official confirmation of incomplete H15 mappings remain necessary before release.
+For setup problems or reproducible bugs, open an issue at <https://github.com/matanmesika/dreame-wet-dry-vacuum-home-assistant/issues>. Include the integration version, Home Assistant version, device model/firmware, relevant redacted logs, and steps to reproduce. Never include account passwords, access tokens, or unredacted device identifiers.
