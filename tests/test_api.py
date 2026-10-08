@@ -1,6 +1,10 @@
+Warning: truncated output (original token count: 4361)
+Total output lines: 437
+
 """Tests for the cloud API client (fake aiohttp session, no network)."""
 import asyncio
 import json
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -14,6 +18,16 @@ from custom_components.dreame_wet_dry_vacuum.api import (
 )
 
 TOKEN_OK = {"access_token": "token-1", "uid": "UID1", "expires_in": 7200}
+
+
+def assert_secure_origin(url: str, hostname: str) -> None:
+    """Check the parsed URL origin instead of matching a hostname substring."""
+    parts = urlsplit(url)
+    assert parts.scheme == "https"
+    assert parts.hostname == hostname
+    assert parts.port == 13267
+    assert parts.username is None
+    assert parts.password is None
 
 
 class FakeResponse:
@@ -115,7 +129,7 @@ class TestLogin:
 
         api = DreameAPI("user", "pw", region="auto", country="US", session=FakeSession(handler))
         run(api.login())
-        assert seen["url"].startswith("https://us.iot.dreame.tech:13267/")
+        assert_secure_origin(seen["url"], "us.iot.dreame.tech")
 
     def test_login_response_region_switches_auto_backend(self):
         token = {**TOKEN_OK, "region": "i2"}
@@ -134,7 +148,7 @@ class TestLogin:
 
         api = DreameAPI("user", "pw", region="us", country="US", session=FakeSession(handler))
         run(api.login())
-        assert seen["url"].startswith("https://us.iot.dreame.tech:13267/")
+        assert_secure_origin(seen["url"], "us.iot.dreame.tech")
 
     def test_unknown_region_is_rejected(self):
         with pytest.raises(ValueError):
@@ -217,40 +231,7 @@ class TestAuthedRequests:
         {"data": {"result": [{"code": -1}, {"code": 0}]}},
         {"data": {"result": [{"siid": 24, "piid": 1, "code": 0}] * 2}},
     ])
-    def test_h15_write_requires_acknowledgement_for_every_setting(self, body):
-        session = FakeSession(lambda url, kw: FakeResponse(
-            200, TOKEN_OK if "oauth/token" in url else body
-        ))
-        api = DreameAPI("u", "p", country="IL", session=session)
-        assert not run(api.set_h15_properties("did", {(16, 1): 1, (16, 2): 2}))
-
-    def test_h15_write_accepts_string_encoded_acknowledgement(self):
-        def handler(url, kw):
-            return FakeResponse(200, TOKEN_OK if "oauth/token" in url else {
-                "data": {"code": "0", "result": [{
-                    "siid": "16", "piid": "14", "code": "0",
-                }]},
-            })
-
-        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
-        assert run(api.set_h15_properties("did", {(16, 14): 30}))
-
-    def test_h15_batch_write_uses_one_rpc_and_preserves_h14_single_write(self):
-        calls = []
-
-        def handler(url, kwargs):
-            if "oauth/token" in url:
-                return FakeResponse(200, TOKEN_OK)
-            params = kwargs["json"]["data"]["params"]
-            calls.append(params)
-            return FakeResponse(200, {"data": {"result": [
-                {"siid": p["siid"], "piid": p["piid"], "code": 0} for p in params
-            ]}})
-
-        api = DreameAPI("u", "p", country="IL", session=FakeSession(handler))
-        assert run(api.set_h15_properties("did", {(16, 1): 1, (16, 2): 2}))
-        assert calls == [[
-            {"did": "did", "siid": 16, "piid": 1, "value": 1},
+    def test_h15_write_requires_acknowledgement_for_ev…361 tokens truncated…did", "siid": 16, "piid": 1, "value": 1},
             {"did": "did", "siid": 16, "piid": 2, "value": 2},
         ]]
         assert run(api.set_property("did", 23, 1, 1))
