@@ -85,7 +85,7 @@ node --check www/dreame-device-card.js
 node --test tests/test_device_card.cjs
 ```
 
-GitHub Actions runs HACS validation, Home Assistant `hassfest`, Ruff, Python tests on supported CI interpreters, and dashboard-card checks. A review ZIP is produced only after those jobs pass. A passing CI build does not replace physical-device validation.
+GitHub Actions runs HACS validation, Home Assistant `hassfest`, Ruff, Python tests on supported CI interpreters, and dashboard-card checks. The review ZIP is produced after the code, test, and `hassfest` jobs pass; the HACS repository-metadata check is reported separately because it depends on GitHub settings. A passing CI build does not replace physical-device validation.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for change and test expectations and [SECURITY.md](SECURITY.md) for vulnerability reporting.
 

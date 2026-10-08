@@ -80,7 +80,9 @@ jobs:
 
   package:
     name: Validated work-in-progress test bundle
-    needs: [hacs, hassfest, lint, tests, frontend]
+    # HACS also checks owner-controlled repository metadata (issues/topics).
+    # Keep the test bundle available when only that external metadata is pending.
+    needs: [hassfest, lint, tests, frontend]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
