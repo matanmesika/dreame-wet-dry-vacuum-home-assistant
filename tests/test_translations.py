@@ -30,7 +30,6 @@ EXPECTED: dict[str, set[str]] = {
     "number": {m["key"] for m in KNOWN_NUMBER_PROPS.values()} | {"h15_volume"},
     "select": {m["key"] for m in KNOWN_SELECT_PROPS.values()},
     "button": {m["key"] for m in KNOWN_BUTTON_PROPS.values()},
-    "vacuum": {"wet_dry"},
 }
 
 TRANSLATION_FILES = [

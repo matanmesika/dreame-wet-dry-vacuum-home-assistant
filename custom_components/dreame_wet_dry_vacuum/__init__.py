@@ -29,6 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 _H15_ENTITY_SCHEMA_KEY = "_h15_entity_schema"
 _H15_ENTITY_SCHEMA_VERSION = 2
 _H15_CONTROLS_SCHEMA_KEY = "_h15_controls_schema"
+_VACUUM_ENTITY_SCHEMA_KEY = "_vacuum_entity_removed"
 
 PLATFORMS = [
     Platform.SENSOR,
@@ -37,7 +38,6 @@ PLATFORMS = [
     Platform.NUMBER,
     Platform.SELECT,
     Platform.BUTTON,
-    Platform.VACUUM,
 ]
 
 type DreameWetDryConfigEntry = ConfigEntry[DreameWetDryCoordinator]
@@ -94,6 +94,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: DreameWetDryConfigEntry)
 
     # Raises ConfigEntryNotReady / ConfigEntryAuthFailed on failure
     await coordinator.async_config_entry_first_refresh()
+
+    # The native vacuum entity duplicated the dedicated controls and looked
+    # inconsistent with the device UI. Remove only the old entity created by
+    # this integration, for both H14 and H15; preserve every other entity.
+    if not entry.data.get(_VACUUM_ENTITY_SCHEMA_KEY):
+        registry = er.async_get(hass)
+        vacuum_unique_id = f"{coordinator.device_id}_vacuum"
+        for entity_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+            if entity_entry.domain == "vacuum" and entity_entry.unique_id == vacuum_unique_id:
+                registry.async_remove(entity_entry.entity_id)
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, _VACUUM_ENTITY_SCHEMA_KEY: 1}
+        )
 
     # One-time cleanup when an existing H15 entry moves from the inherited H14
     # entity layout to the model-specific H15 profile. This removes stale

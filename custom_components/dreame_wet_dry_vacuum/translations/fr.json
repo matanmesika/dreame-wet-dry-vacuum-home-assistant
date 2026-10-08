@@ -225,64 +225,6 @@
       "start_self_dry": {
         "name": "Démarrer le séchage"
       }
-    },
-    "vacuum": {
-      "wet_dry": {
-        "name": "Aspirateur",
-        "state_attributes": {
-          "work_mode": {
-            "name": "Activité actuelle"
-          },
-          "battery_level": {
-            "name": "Batterie"
-          },
-          "charging": {
-            "name": "En charge"
-          },
-          "start_action": {
-            "name": "Action de démarrage"
-          },
-          "clean_count": {
-            "name": "Nombre de nettoyages"
-          },
-          "roller_brush_remaining_minutes": {
-            "name": "Durée restante de la brosse (min)"
-          },
-          "filter_remaining_minutes": {
-            "name": "Durée restante du filtre (min)"
-          },
-          "warnings": {
-            "name": "Avertissements"
-          },
-          "errors": {
-            "name": "Erreurs"
-          },
-          "cleaning_mode": {
-            "name": "Mode de nettoyage"
-          },
-          "self_cleaning_mode": {
-            "name": "Mode autonettoyage"
-          },
-          "drying_mode": {
-            "name": "Mode de séchage"
-          },
-          "water_level": {
-            "name": "Niveau d’eau"
-          },
-          "hot_water_mode": {
-            "name": "Mode eau chaude"
-          },
-          "volume_level": {
-            "name": "Volume"
-          },
-          "roller_brush_remaining_percent": {
-            "name": "Brosse restante (%)"
-          },
-          "filter_remaining_percent": {
-            "name": "Filtre restant (%)"
-          }
-        }
-      }
     }
   }
 }

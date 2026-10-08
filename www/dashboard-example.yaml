@@ -9,5 +9,3 @@ views:
       - type: custom:dreame-device-card
         language: en
         title: H15 Pro Heat
-        # Optional: choose the device using its real vacuum entity ID.
-        # entity: vacuum.REPLACE_WITH_YOUR_ENTITY

@@ -3,7 +3,6 @@ import asyncio
 import importlib
 import sys
 import types
-from enum import IntFlag, StrEnum
 from unittest.mock import AsyncMock
 
 import pytest
@@ -38,25 +37,11 @@ def component(monkeypatch):
     class PlatformEntity:
         pass
 
-    class VacuumFeature(IntFlag):
-        STATE = 1
-        START = 2
-        STOP = 4
-        FAN_SPEED = 8
-
-    class Activity(StrEnum):
-        CLEANING = "cleaning"
-        DOCKED = "docked"
-        IDLE = "idle"
-        PAUSED = "paused"
-        ERROR = "error"
-
     adapters = {
         "homeassistant": {}, "homeassistant.components": {},
         "homeassistant.helpers": {},
         "homeassistant.components.persistent_notification": {"async_create": lambda *args, **kw: None},
         "homeassistant.components.button": {"ButtonEntity": PlatformEntity},
-        "homeassistant.components.vacuum": {"StateVacuumEntity": PlatformEntity, "VacuumEntityFeature": VacuumFeature, "VacuumActivity": Activity},
         "homeassistant.components.binary_sensor": {"BinarySensorEntity": PlatformEntity, "BinarySensorDeviceClass": types.SimpleNamespace(RUNNING="running", CONNECTIVITY="connectivity", PROBLEM="problem", BATTERY_CHARGING="battery_charging")},
         "homeassistant.components.select": {"SelectEntity": PlatformEntity},
         "homeassistant.components.switch": {"SwitchEntity": PlatformEntity},
@@ -72,7 +57,7 @@ def component(monkeypatch):
         "homeassistant.const": {
             "EntityCategory": types.SimpleNamespace(CONFIG="config", DIAGNOSTIC="diagnostic"),
             "CONF_PASSWORD": "password", "CONF_USERNAME": "username",
-            "Platform": types.SimpleNamespace(SENSOR="sensor", BINARY_SENSOR="binary_sensor", SWITCH="switch", NUMBER="number", SELECT="select", BUTTON="button", VACUUM="vacuum"),
+            "Platform": types.SimpleNamespace(SENSOR="sensor", BINARY_SENSOR="binary_sensor", SWITCH="switch", NUMBER="number", SELECT="select", BUTTON="button"),
         },
         "homeassistant.core": {"HomeAssistant": Generic, "callback": lambda f: f},
         "homeassistant.exceptions": {
@@ -91,7 +76,7 @@ def component(monkeypatch):
         monkeypatch.setitem(sys.modules, name, module)
     package = "custom_components.dreame_wet_dry_vacuum"
     monkeypatch.setattr(sys.modules[package], "DreameWetDryConfigEntry", Generic, raising=False)
-    imported = ["coordinator", "entity", "select", "switch", "number", "sensor", "button", "binary_sensor", "vacuum"]
+    imported = ["coordinator", "entity", "select", "switch", "number", "sensor", "button", "binary_sensor"]
     for name in imported:
         monkeypatch.delitem(sys.modules, f"{package}.{name}", raising=False)
     modules = {name: importlib.import_module(f"{package}.{name}") for name in imported}
@@ -111,11 +96,18 @@ def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeyp
         changed.append(entity_id)
         next(e for e in entries if e.entity_id == entity_id).disabled_by = kwargs["disabled_by"]
 
-    registry = types.SimpleNamespace(async_update_entity=update_entity)
+    removed = []
+    def remove_entity(entity_id):
+        removed.append(entity_id)
+        entries[:] = [entity for entity in entries if entity.entity_id != entity_id]
+
+    registry = types.SimpleNamespace(async_update_entity=update_entity, async_remove=remove_entity)
     entries = [
         types.SimpleNamespace(entity_id="sensor.old_setting", domain="sensor", unique_id="test-device_h15_property_16_1", disabled_by=None),
         types.SimpleNamespace(entity_id="sensor.raw_data", domain="sensor", unique_id="test-device_h15_property_1_68", disabled_by=None),
         types.SimpleNamespace(entity_id="sensor.h14_status", domain="sensor", unique_id="test-device_2.1", disabled_by=None),
+        types.SimpleNamespace(entity_id="vacuum.test_device", domain="vacuum", unique_id="test-device_vacuum", disabled_by=None),
+        types.SimpleNamespace(entity_id="vacuum.other_device", domain="vacuum", unique_id="other-device_vacuum", disabled_by=None),
     ]
     adapter = types.ModuleType("homeassistant.helpers.entity_registry")
     adapter.async_get = lambda hass: registry
@@ -133,6 +125,7 @@ def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeyp
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    assert "vacuum" not in module.PLATFORMS
     api = types.SimpleNamespace(
         login=AsyncMock(), get_devices=AsyncMock(return_value=[{"did": "test-device", "model": model}] if discovery == "list" else []),
         get_device_record=AsyncMock(return_value={"did": "test-device", "model": model}),
@@ -172,10 +165,14 @@ def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeyp
     else:
         api.get_device_record.assert_not_awaited()
     assert changed == expected
+    assert removed == ["vacuum.test_device"]
+    assert any(entity.entity_id == "vacuum.other_device" for entity in entries)
+    assert entry.data["_vacuum_entity_removed"] == 1
     if expected:
         # A user's later decision to re-enable a diagnostic is respected.
         assert asyncio.run(module.async_setup_entry(hass, entry))
         assert changed == expected
+        assert removed == ["vacuum.test_device"]
 
 
 def make_coordinator(component, model="dreame.hold.w2449e"):
