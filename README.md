@@ -9,6 +9,24 @@ An unofficial Home Assistant custom integration for supported Dreame wet and dry
 
 This community project is not affiliated with or supported by Dreame. It uses undocumented cloud interfaces that can change without notice.
 
+## Integration branding
+
+The **integration itself** supplies its local Home Assistant brand icon. Home Assistant 2026.3 and newer recognize brand assets located in the integration's `brand/` directory:
+
+- `custom_components/dreame_wet_dry_vacuum/brand/icon.png` — Dreame emblem (256 x 256).
+- `custom_components/dreame_wet_dry_vacuum/brand/icon@2x.png` — Dreame emblem (512 x 512).
+- `custom_components/dreame_wet_dry_vacuum/brand/logo.png` — Dreame wordmark for larger placements.
+- `custom_components/dreame_wet_dry_vacuum/brand/logo@2x.png` — high-density wordmark.
+
+The images are built from a vector source held under `assets/branding/`;
+see its [attribution and reproduction notes](assets/branding/README.md).
+**HACS storefronts may not display local integration branding** despite
+the integration icon working in Home Assistant itself:
+[HACS issue #5402](https://github.com/hacs/integration/issues/5402).
+
+These assets are part of the **integration**, not the optional Lovelace dashboard card. They are already included in the integration repository (including `main`) and are installed together with `custom_components/dreame_wet_dry_vacuum/`. The icon is also used as a fallback wherever Home Assistant requests a logo. No duplicate brand files should be bundled into the standalone dashboard. The H15 integration remains experimental, and this branding does not imply an integration release.
+
+
 ## What it provides
 
 - Cloud account setup with automatic country selection from Home Assistant and an optional server override.

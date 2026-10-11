@@ -1,0 +1,6 @@
+type: custom:dreame-device-card
+language: en
+model: H15
+title: H15 Pro Heat
+# Optional: entity: sensor.YOUR_REAL_DREAME_ENTITY
+# Optional: device_id: YOUR_REAL_HA_DEVICE_ID

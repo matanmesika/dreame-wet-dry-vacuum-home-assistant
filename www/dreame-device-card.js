@@ -159,7 +159,9 @@ function validateConfig(config) {
       throw new Error(`Invalid entity for role: ${role}`);
     }
   }
-  if (config.image && !/^\/(?!\/)/.test(config.image)) throw new Error("image must be a local /local/ or /api/ URL");
+  if (config.image && (typeof config.image !== "string" || !/^\/(?:local|api|hacsfiles)\/[^?#\s]+(?:\?[^#]*)?$/.test(config.image))) {
+    throw new Error("image must be a local /local/, /api/ or /hacsfiles/ URL");
+  }
   if (config.language && !["he", "en"].includes(config.language)) throw new Error("language must be he or en");
   return { ...config, entities: { ...entities } };
 }
@@ -188,7 +190,18 @@ function resolveRoles(device, entries, overrides = {}, profile = deviceProfile(d
       if (entry) result[role] = entry.entity_id;
     }
   }
-  return { ...result, ...overrides };
+  // Display-only sensors can use helpers; write controls must belong
+  // to the currently selected Dreame, never another network appliance.
+  const safeOverrides = {};
+  for (const [role, entityId] of Object.entries(overrides)) {
+    const domain = profileRoles(profile)[role]?.[0];
+    if (["button", "select", "switch", "number"].includes(domain)) {
+      if (!device || !entries.some((entry) => entry.device_id === device.id && entry.platform === DREAME_DOMAIN &&
+        entry.entity_id === entityId && !entry.disabled_by && !entry.hidden_by)) continue;
+    }
+    safeOverrides[role] = entityId;
+  }
+  return { ...result, ...safeOverrides };
 }
 
 function isUsable(state, domain) {
@@ -242,6 +255,7 @@ class DreameDeviceCard extends HTMLElement {
     this._pending = false;
     this._message = "";
     this._generation = 0;
+    this._discoverySerial = 0;
     this._scrollPositions = new Map();
     this._scrolling = false;
     this.shadowRoot.addEventListener("click", (event) => this._click(event));
@@ -266,6 +280,8 @@ class DreameDeviceCard extends HTMLElement {
   setConfig(config) {
     this._config = validateConfig(config);
     this._generation++;
+    this._discoverySerial++;
+    this._pending = false; // A previous device's unfinished command is obsolete.
     this._roles = this._config.entities;
     this._detectedProfile = undefined;
     this._device = undefined;
@@ -295,6 +311,9 @@ class DreameDeviceCard extends HTMLElement {
     for (const unsubscribe of this._registryUnsubscribers || []) unsubscribe();
     this._registryUnsubscribers = [];
     this._registryConnection = connection;
+    // Reconnects replace the Home Assistant WS connection without changing
+    // card config. Always refresh device IDs on the new connection.
+    this._resolved = false;
     for (const type of ["entity_registry_updated", "device_registry_updated"]) {
       Promise.resolve(connection.subscribeEvents(() => {
         registryCache.delete(connection);
@@ -356,7 +375,9 @@ class DreameDeviceCard extends HTMLElement {
   async _discover(retry = false) {
     this._resolving = true;
     const generation = this._generation;
+    const request = ++this._discoverySerial;
     const hass = this._hass;
+    const isCurrent = () => generation === this._generation && request === this._discoverySerial && hass === this._hass;
     const cacheKey = hass.connection || hass;
     try {
       if (retry) registryCache.delete(cacheKey);
@@ -364,7 +385,7 @@ class DreameDeviceCard extends HTMLElement {
         hass.callWS({ type: "config/device_registry/list" }), hass.callWS({ type: "config/entity_registry/list" }),
       ]));
       const [devices, entries] = await registryCache.get(cacheKey);
-      if (generation !== this._generation) return;
+      if (!isCurrent()) return;
       this._entries = entries;
       this._device = resolveDevice(this._config, devices, entries);
       this._detectedProfile = deviceProfile(this._device, entries);
@@ -373,11 +394,11 @@ class DreameDeviceCard extends HTMLElement {
         /^binary_sensor\./.test(e.entity_id) && /_h15_(warn|error)_\d+_\d+$/.test(e.unique_id) && !e.disabled_by && !e.hidden_by);
       this._registryError = "";
     } catch {
-      if (generation !== this._generation) return;
+      if (!isCurrent()) return;
       registryCache.delete(cacheKey);
       this._registryError = this._t("registry_error");
     } finally {
-      if (generation === this._generation) {
+      if (isCurrent()) {
         this._resolved = true;
         this._resolving = false;
         this._render();
@@ -550,10 +571,10 @@ class DreameDeviceCard extends HTMLElement {
           <button class="save-choice" data-save-option ${this._ready(this._choice) && options.includes(this._draftOption) ? "" : "disabled"}>${this._t("save")}</button>`;
       }
       const groups = {
-        cleaning_settings: ["mode", "suction", "water", "hot_water", "detergent"],
-        wash_settings: ["wash_mode", "dry_mode", "auto_dry", "smart_dry", "auto_wash", "protection"],
-        device_settings: ["traction", "arm_smart", "arm_hot", "arm_suction", "arm_custom", "volume", "language"],
-        advanced: ["moisture", "timed_dry", "schedule_time", "repeat"],
+        cleaning_settings: ["mode", "suction", "water", "hot_water", "detergent", "temperature"],
+        wash_settings: ["wash_mode", "dry_mode", "auto_dry", "smart_dry", "auto_wash", "return_wash", "return_dry", "protection"],
+        device_settings: ["traction", "arm", "arm_smart", "arm_hot", "arm_suction", "arm_custom", "volume", "language"],
+        advanced: ["moisture", "timed_dry", "scheduled_wash", "scheduled_dry", "schedule_time", "repeat"],
       };
       if (groups[this._settings]) {
         const controls = groups[this._settings].map((role) => this._control(role)).join("");
@@ -679,8 +700,10 @@ class DreameDeviceCard extends HTMLElement {
     } catch (err) {
       if (generation === this._generation) this._message = `${this._t("error")}: ${err.message || err}`;
     } finally {
-      this._pending = false;
-      this._render();
+      if (generation === this._generation) {
+        this._pending = false;
+        this._render();
+      }
     }
   }
 }
@@ -708,6 +731,9 @@ const DREAME_STYLES = `
   .consumable{padding:4px 10px 10px;border-radius:12px;margin-bottom:10px}.notice,.confirmation,.alert{font-size:12px;padding:10px}.muted,small{font-size:11px}footer{margin-top:10px;font-size:9px}
   @media(max-width:380px){ha-card{padding:12px}.row{gap:8px}.input{flex-basis:54%}.hero{height:72px;flex-basis:54px}.metric strong{font-size:12px}}
   .panel{max-height:340px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;-webkit-overflow-scrolling:touch;overflow-anchor:none}
+  /* Mobile uses Home Assistant's page scrolling: never trap or clip the bottom
+     settings rows and footer behind a 340px nested scroll region on iPhone. */
+  @media(max-width:600px){.panel{max-height:none;overflow:visible;overscroll-behavior:auto}}
   .setting-group{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;background:transparent;text-align:start;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;padding:12px 2px;font-size:12px}
   .setting-group strong{font-weight:500}.setting-group small{display:block;font-size:10px;margin-top:4px;color:var(--secondary-text-color)}.setting-group ha-icon{--mdc-icon-size:18px;color:var(--secondary-text-color)}
   .setting-value{display:flex;align-items:center;justify-content:space-between;gap:6px;width:100%;font-size:11px;padding:7px;text-align:start;overflow-wrap:anywhere}.setting-value ha-icon{--mdc-icon-size:16px;flex-shrink:0}
@@ -785,6 +811,12 @@ class DreameDeviceCardEditor extends HTMLElement {
       if (field === "model" && value !== config.model) {
         delete config.device_id; delete config.entity; config.entities = {};
       }
+      if (["device_id", "entity"].includes(field) && value !== (config[field] || "")) {
+        // Never retain manual entity overrides when the active device changes.
+        config.entities = {};
+        if (field === "device_id") delete config.entity;
+        else delete config.device_id;
+      }
       if (value) config[field] = value;
       else delete config[field];
     } else return;
@@ -796,8 +828,16 @@ class DreameDeviceCardEditor extends HTMLElement {
     const selected = this._config.entities?.[role] || "";
     const domain = profileRoles(this._config.model === "auto" ? deviceProfile((this._devices || []).find((d) => d.id === this._config.device_id), this._entries) : this._config.model)[role]?.[0];
     if (!domain) return "";
-    const entries = Object.entries(this._hass?.states || {}).filter(([id]) => id.startsWith(`${domain}.`));
-    if (selected && !entries.some(([id]) => id === selected)) entries.unshift([selected, { attributes: {} }]);
+    // Manual read-only helpers can come from elsewhere. Controls must be
+    // bound to the selected Dreame, so exclude other appliances from pickers.
+    const restrict = this._config.device_id && ["button", "select", "switch", "number"].includes(domain);
+    const matching = restrict ? new Set((this._entries || []).filter((e) => e.device_id === this._config.device_id &&
+      e.platform === DREAME_DOMAIN && !e.disabled_by && !e.hidden_by).map((e) => e.entity_id)) : null;
+    const entries = Object.entries(this._hass?.states || {}).filter(([id]) => id.startsWith(`${domain}.`) &&
+      (!matching || matching.has(id)));
+    if (selected && (!matching || matching.has(selected)) && !entries.some(([id]) => id === selected)) {
+      entries.unshift([selected, { attributes: {} }]);
+    }
     const options = entries.sort(([a], [b]) => a.localeCompare(b)).map(([id, state]) => `<option value="${escapeHTML(id)}" ${id === selected ? "selected" : ""}>${escapeHTML(state.attributes?.friendly_name ? `${state.attributes.friendly_name} — ${id}` : id)}</option>`).join("");
     return `<label>${escapeHTML(this._t(role))}<select data-role="${role}"><option value="" ${!selected ? "selected" : ""}>${this._t("automatic")}</option>${options}</select></label>`;
   }

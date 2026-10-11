@@ -437,3 +437,156 @@ test('editor changes profile and resets stale manual overrides without device wr
   assert.equal(Object.keys(config.entities).length, 0);
   assert.match(editor.shadowRoot.innerHTML, /Device type/);
 });
+
+
+test('iPhone viewport uses normal HA page scrolling without clipping settings', () => {
+  const widget = card();
+  widget._config = { language: 'en', title: 'H15 Pro Heat' };
+  widget._hass = { states: {}, language: 'en' };
+  widget._render();
+  const output = widget.shadowRoot.innerHTML;
+  assert.match(output, /@media\(max-width:600px\)\{\.panel\{max-height:none;overflow:visible;overscroll-behavior:auto\}\}/);
+  assert.match(output, /role="tablist"/);
+  assert.match(output, /Operation/);
+  assert.match(output, /Device status/);
+  assert.match(output, /Maintenance/);
+  assert.match(output, /DREAME · WET & DRY/);
+});
+
+
+test('manual write overrides cannot target a different Dreame device', () => {
+  const a = { id: 'dreame-a', identifiers: [['dreame_wet_dry_vacuum', 'cloud-a']] };
+  const b = { id: 'dreame-b', identifiers: [['dreame_wet_dry_vacuum', 'cloud-b']] };
+  const entries = [
+    { device_id: 'dreame-a', platform: 'dreame_wet_dry_vacuum', unique_id: 'cloud-a_h15_command_start_self_clean', entity_id: 'button.clean_a' },
+    { device_id: 'dreame-b', platform: 'dreame_wet_dry_vacuum', unique_id: 'cloud-b_h15_command_start_self_clean', entity_id: 'button.clean_b' },
+    { device_id: 'dreame-a', platform: 'dreame_wet_dry_vacuum', unique_id: 'cloud-a_h15_setting_16_1', entity_id: 'select.suction_a' },
+  ];
+  const roles = get('resolveRoles')(a, entries, {
+    start_clean: 'button.clean_b', suction: 'select.suction_a', filter: 'sensor.manual_percentage',
+  });
+  assert.equal(roles.start_clean, 'button.clean_a');
+  assert.equal(roles.suction, 'select.suction_a');
+  assert.equal(roles.filter, 'sensor.manual_percentage'); // read-only helpers are safe
+  assert.equal(get('resolveRoles')(b, entries, { start_clean: 'button.clean_a' }).start_clean, 'button.clean_b');
+  assert.equal(get('resolveRoles')(undefined, entries, { start_clean: 'button.clean_a' }).start_clean, undefined);
+});
+
+test('changing H15 devices clears old manual controls and keeps title', () => {
+  const editor = new (elements.get('dreame-device-card-editor'))();
+  editor.setConfig({ model: 'H15', device_id: 'first', title: 'My H15', entities: { mode: 'select.first', filter: 'sensor.first' } });
+  editor._change({ target: { dataset: { field: 'device_id' }, value: 'second' } });
+  let conf = editor.events.at(-1).detail.config;
+  assert.equal(conf.device_id, 'second');
+  assert.equal(conf.title, 'My H15');
+  assert.equal(Object.keys(conf.entities).length, 0);
+  editor._change({ target: { dataset: { field: 'entity' }, value: 'sensor.second' } });
+  conf = editor.events.at(-1).detail.config;
+  assert.equal(conf.device_id, undefined);
+  assert.equal(conf.entity, 'sensor.second');
+});
+
+test('existing H15 settings are visible only when their real entities exist', () => {
+  const c = card();
+  const additional = {
+    temperature: 'select.temperature', return_wash: 'select.return_wash',
+    return_dry: 'select.return_dry', arm: 'select.arm',
+    scheduled_wash: 'select.scheduled_wash', scheduled_dry: 'select.scheduled_dry',
+  };
+  Object.assign(c._roles, additional);
+  for (const id of Object.values(additional)) c._hass.states[id] = state('Off', { options: ['Off', 'On'] });
+  for (const [group, roles] of Object.entries({
+    cleaning_settings: ['temperature'], wash_settings: ['return_wash', 'return_dry'],
+    device_settings: ['arm'], advanced: ['scheduled_wash', 'scheduled_dry'],
+  })) {
+    c._settings = group;
+    for (const role of roles) assert.match(c._panel(), new RegExp('data-setting="' + role + '"'));
+  }
+  assert.equal(c.calls.length, 0);
+});
+
+test('old commands must not unlock a reconfigured card', async () => {
+  const c = card();
+  let finish;
+  c._hass.callService = () => new Promise((resolve) => { finish = resolve; });
+  const waiting = c._act('reset_filter', undefined, true);
+  assert.equal(c._pending, true);
+  c.setConfig({ model: 'H15', title: 'Different H15' });
+  assert.equal(c._pending, false);
+  c._pending = true; // new generation's in-flight operation
+  finish();
+  await waiting;
+  assert.equal(c._pending, true);
+});
+
+test('card image paths are restricted to Home Assistant local resources', () => {
+  const validate = get('validateConfig');
+  for (const src of ['/local/dreame.png', '/api/image/serve/x', '/hacsfiles/dreame-device-card/dreame.png', '/local/dreame.png?v=2']) {
+    assert.equal(validate({ image: src }).image, src);
+  }
+  for (const src of ['https://example.net/file.png', '//example.net/file.png', '/api-redirect', '/config/private', 'javascript:alert(1)']) {
+    assert.throws(() => validate({ image: src }));
+  }
+});
+
+test('late registry response cannot overwrite a newer lookup', async () => {
+  const c = card();
+  const pending = [];
+  const expected = [{ id: 'first', model: 'dreame.hold.w2449e', identifiers: [['dreame_wet_dry_vacuum', 'id-one']] }];
+  const entries = [{ device_id: 'first', platform: 'dreame_wet_dry_vacuum', unique_id: 'id-one_online', entity_id: 'binary_sensor.online' }];
+  c._config = { model: 'H15', entities: {} };
+  c._hass.callWS = ({ type }) => type.includes('device_registry')
+    ? new Promise((resolve) => pending.push(resolve)) : Promise.resolve(entries);
+  const older = c._discover(true);
+  const newer = c._discover(true);
+  assert.equal(pending.length, 2);
+  pending[1](expected);
+  await newer;
+  pending[0]([]);
+  await older;
+  assert.equal(c._device.id, 'first');
+});
+
+
+test('visual editor limits write-capable choices to the selected device', () => {
+  const editor = new (elements.get('dreame-device-card-editor'))();
+  editor.setConfig({ model: 'H15', device_id: 'phone-a' });
+  editor._entries = [
+    { device_id: 'phone-a', platform: 'dreame_wet_dry_vacuum', entity_id: 'select.a_mode' },
+    { device_id: 'phone-b', platform: 'dreame_wet_dry_vacuum', entity_id: 'select.b_mode' },
+    { device_id: 'phone-a', platform: 'different_integration', entity_id: 'select.external' },
+  ];
+  editor._hass = { states: { 'select.a_mode': state('Off'), 'select.b_mode': state('Off'),
+    'select.external': state('Off'), 'sensor.display_helper': state('90') }, language: 'en' };
+  assert.match(editor._picker('mode'), /select.a_mode/);
+  assert.doesNotMatch(editor._picker('mode'), /select.b_mode/);
+  assert.doesNotMatch(editor._picker('mode'), /select.external/);
+  assert.match(editor._picker('battery'), /sensor.display_helper/);
+});
+
+test('Home Assistant websocket reconnection forces a fresh device registry lookup', async () => {
+  const c = card();
+  const entries = [{ device_id: 'one', platform: 'dreame_wet_dry_vacuum',
+    unique_id: 'cloud_online', entity_id: 'binary_sensor.online' }];
+  const makeHass = (deviceId, count) => ({
+    language: 'en',
+    states: { 'binary_sensor.online': state('on') },
+    connection: { subscribeEvents: () => () => {} },
+    callWS: ({ type }) => {
+      count.n++;
+      return Promise.resolve(type.includes('device_registry') ?
+        [{ id: deviceId, model: 'dreame.hold.w2449e', identifiers: [['dreame_wet_dry_vacuum', 'cloud']] }] :
+        entries.map((e) => ({ ...e, device_id: deviceId })));
+    },
+  });
+  c._config = { model: 'H15', entities: {} };
+  const first = { n: 0 }, second = { n: 0 };
+  c.hass = makeHass('one', first);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(c._device?.id, 'one');
+  c.hass = makeHass('two', second);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(first.n >= 2);
+  assert.ok(second.n >= 2);
+  assert.equal(c._device?.id, 'two');
+});

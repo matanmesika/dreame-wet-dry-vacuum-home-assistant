@@ -1,0 +1,10 @@
+title: Dreame
+views:
+  - title: Dreame Wet & Dry
+    path: dreame
+    icon: mdi:vacuum
+    cards:
+      - type: custom:dreame-device-card
+        language: en
+        model: H15
+        title: H15 Pro Heat

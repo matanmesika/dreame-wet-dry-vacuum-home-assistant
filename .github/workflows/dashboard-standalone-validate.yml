@@ -1,0 +1,52 @@
+name: Validate standalone Dreame dashboard candidate
+on:
+  push:
+    paths:
+      - "dashboard-release/**"
+      - ".github/workflows/dashboard-standalone-validate.yml"
+      - "www/dreame-device-card.js"
+  pull_request:
+    paths:
+      - "dashboard-release/**"
+      - ".github/workflows/dashboard-standalone-validate.yml"
+      - "www/dreame-device-card.js"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Verify package matches the tested integration card
+        run: cmp www/dreame-device-card.js dashboard-release/dist/dreame-device-card.js
+      - name: Syntax and standalone card tests
+        run: |
+          node --check dashboard-release/dist/dreame-device-card.js
+          node --test dashboard-release/tests/test_device_card.cjs
+      - name: Validate standalone metadata, real UI documentation and integration branding
+        run: |
+          node -e "const fs=require('fs'),p=JSON.parse(fs.readFileSync('dashboard-release/hacs.json')); if(p.filename!=='dreame-device-card.js'||!p.name) process.exit(1)"
+          test -s dashboard-release/docs/CURRENT_UI.md
+          test -s dashboard-release/PRODUCT_TREE.md
+          ! grep -q 'docs/images/' dashboard-release/README.md
+          test ! -d dashboard-release/docs/images
+          test -s custom_components/dreame_wet_dry_vacuum/brand/icon.png
+          test -s custom_components/dreame_wet_dry_vacuum/brand/icon@2x.png
+          test -s custom_components/dreame_wet_dry_vacuum/brand/logo.png
+          test -s custom_components/dreame_wet_dry_vacuum/brand/logo@2x.png
+          test ! -e dashboard-release/icon.png
+          test ! -e dashboard-release/icon@2x.png
+          test ! -e dashboard-release/docs/images/dreame-icon.png
+      - name: Package a review-only preview (not a release)
+        run: |
+          cd dashboard-release
+          zip -r ../dreame-dashboard-preview.zip README.md CHANGELOG.md PRODUCT_TREE.md RELEASE_CHECKLIST.md LICENSE hacs.json info.md dist docs examples tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dreame-dashboard-preview-${{ github.sha }}
+          path: dreame-dashboard-preview.zip
+          retention-days: 14
