@@ -33,6 +33,12 @@ def component(monkeypatch):
 
         def async_set_updated_data(self, data):
             self.data = data
+            for listener in getattr(self, "listeners", []):
+                listener()
+
+        def async_add_listener(self, listener):
+            self.__dict__.setdefault("listeners", []).append(listener)
+            return lambda: self.listeners.remove(listener)
 
     class PlatformEntity:
         pass
@@ -88,7 +94,8 @@ def component(monkeypatch):
 
 @pytest.mark.parametrize("model,expected,layout_schema", [("dreame.hold.w2449e", ["sensor.old_setting", "sensor.raw_data"], 1), ("dreame.hold.w2449e", ["sensor.old_setting", "sensor.raw_data"], 0), ("dreame.hold.w2306e", [], 0)])
 @pytest.mark.parametrize("discovery", ["list", "direct", "unresolved"])
-def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeypatch, model, expected, layout_schema, discovery):
+@pytest.mark.parametrize("awake_reads", [0, 3])
+def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeypatch, model, expected, layout_schema, discovery, awake_reads):
     from pathlib import Path
 
     changed = []
@@ -108,6 +115,11 @@ def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeyp
         types.SimpleNamespace(entity_id="sensor.h14_status", domain="sensor", unique_id="test-device_2.1", disabled_by=None),
         types.SimpleNamespace(entity_id="vacuum.test_device", domain="vacuum", unique_id="test-device_vacuum", disabled_by=None),
         types.SimpleNamespace(entity_id="vacuum.other_device", domain="vacuum", unique_id="other-device_vacuum", disabled_by=None),
+        types.SimpleNamespace(entity_id="switch.custom_cleaning", domain="switch", unique_id="test-device_h15_setting_16_6", disabled_by=None),
+        types.SimpleNamespace(entity_id="switch.arm_smart", domain="switch", unique_id="test-device_h15_setting_24_1_bit_0", disabled_by=None),
+        types.SimpleNamespace(entity_id="switch.smart_drying", domain="switch", unique_id="test-device_h15_setting_26_1", disabled_by=None),
+        types.SimpleNamespace(entity_id="switch.schedule_monday", domain="switch", unique_id="test-device_h15_setting_1_77_day_1", disabled_by=None),
+        types.SimpleNamespace(entity_id="sensor.filter_percent", domain="sensor", unique_id="test-device_consumable_filter_percent", disabled_by=None),
     ]
     adapter = types.ModuleType("homeassistant.helpers.entity_registry")
     adapter.async_get = lambda hass: registry
@@ -135,8 +147,9 @@ def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeyp
     coordinator.async_config_entry_first_refresh = AsyncMock()
     coordinator.start_polling = lambda: None
     coordinator.start_mqtt = lambda: None
+    coordinator.h15_awake_reads = awake_reads
     monkeypatch.setattr(module, "DreameWetDryCoordinator", lambda *args: coordinator)
-    entry = types.SimpleNamespace(entry_id="test-entry", data={
+    entry = types.SimpleNamespace(entry_id="test-entry", async_on_unload=lambda cb: None, data={
         "username": "user", "password": "pw", "country": "IL", "region": "auto",
         "device_id": "test-device", "_h15_entity_schema": 2, "_h15_layout_schema": layout_schema,
     })
@@ -164,15 +177,33 @@ def test_upgrade_only_disables_superseded_h15_setting_sensors(component, monkeyp
         api.get_device_record.assert_awaited_once_with("test-device", [])
     else:
         api.get_device_record.assert_not_awaited()
-    assert changed == expected
+    unreported = ["switch.smart_drying", "switch.schedule_monday", "sensor.filter_percent"]
+    pruned = unreported if awake_reads >= 3 and model == "dreame.hold.w2449e" else []
+    assert changed == [*expected, *pruned]
+    # Never removed, only disabled: a wrong guess stays reversible.
     assert removed == ["vacuum.test_device"]
     assert any(entity.entity_id == "vacuum.other_device" for entity in entries)
     assert entry.data["_vacuum_entity_removed"] == 1
+    assert entry.data.get("_h15_unreported_disabled", []) == sorted(
+        next(e.unique_id for e in entries if e.entity_id == entity_id) for entity_id in pruned
+    )
     if expected:
         # A user's later decision to re-enable a diagnostic is respected.
         assert asyncio.run(module.async_setup_entry(hass, entry))
-        assert changed == expected
+        assert changed == [*expected, *pruned]
         assert removed == ["vacuum.test_device"]
+    if pruned:
+        # The unit reports the property later: it comes back, a user's own choice stays.
+        coordinator.props[(26, 1)] = 1
+        coordinator.props[(1, 77)] = 1
+        coordinator.props[(6, 6)] = 3600
+        coordinator.props[(6, 7)] = 100
+        next(e for e in entries if e.entity_id == "switch.schedule_monday").disabled_by = "user"
+        coordinator.async_set_updated_data(coordinator._build_data())
+        by_id = {e.entity_id: e.disabled_by for e in entries}
+        assert by_id["switch.smart_drying"] is None
+        assert by_id["switch.schedule_monday"] == "user"
+        assert entry.data["_h15_unreported_disabled"] == ["test-device_consumable_filter_percent"] or by_id["sensor.filter_percent"] is None
 
 
 def make_coordinator(component, model="dreame.hold.w2449e"):
@@ -685,6 +716,22 @@ def test_awake_refresh_reads_app_only_settings_once_per_window(component, monkey
     assert coordinator.props[(19, 2)] == 3600
     assert (23, 1) not in coordinator.props  # failed reads are never invented
     coordinator.api.set_h15_properties.assert_not_called()
+    assert coordinator.h15_awake_reads == 1
+
+
+def test_sleeping_unit_does_not_count_as_an_awake_read(component, monkeypatch):
+    """A sleeping unit (1.28 == 7) or an empty live read proves nothing about support."""
+    coordinator = make_coordinator(component)
+    coordinator.hass = types.SimpleNamespace(async_create_background_task=lambda coro, name: None)
+    coordinator.async_set_updated_data = lambda data: None
+    monkeypatch.setattr(component["coordinator"].asyncio, "sleep", AsyncMock())
+    coordinator.props[(1, 28)] = 7
+    coordinator.api.get_properties = AsyncMock(return_value=[{"siid": 1, "piid": 8, "code": 0, "value": 2}])
+    asyncio.run(coordinator._async_h15_awake_refresh())
+    coordinator.props[(1, 28)] = 1
+    coordinator.api.get_properties = AsyncMock(return_value=[])
+    asyncio.run(coordinator._async_h15_awake_refresh())
+    assert coordinator.h15_awake_reads == 0
 
 
 def test_awake_refresh_failure_is_non_fatal(component, monkeypatch):
