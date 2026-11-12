@@ -99,6 +99,9 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._is_h15 = is_h15_pro_heat(self._model)
         self._h15_discovery_done = False
         self._h15_poll_keys: list[str] = []
+        # Live reads answered while the unit was awake. A sleeping unit reports
+        # nothing, so only these can prove that a property is unsupported.
+        self.h15_awake_reads = 0
 
         self._h15_mapping_snapshot: dict[str, Any] = {}
         self._h15_last_changes: dict[str, dict[str, Any]] = {}
@@ -124,6 +127,13 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def h15_last_scan(self) -> datetime | None:
         """Return timestamp of the last manual/initial H15 mapping scan."""
         return self._h15_last_scan
+
+    def reports(self, key: tuple[int, int] | str) -> bool:
+        """Return whether the unit reports a usable value for this property."""
+        if isinstance(key, str):  # "siid.piid", as in CONSUMABLE_SENSORS
+            siid, piid = key.split(".")
+            key = (int(siid), int(piid))
+        return self.props.get(key) not in (None, -1, "-1")
 
     @callback
     def start_polling(self) -> None:
@@ -332,6 +342,8 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         if not live:
             return
+        if self.props.get((1, 28)) != 7:
+            self.h15_awake_reads += 1
         new_keys = self._apply_h15_values(live)
         if new_keys and self.new_prop_callback:
             self.new_prop_callback(new_keys)

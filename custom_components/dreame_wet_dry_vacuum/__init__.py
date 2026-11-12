@@ -5,7 +5,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -15,6 +15,7 @@ from .const import (
     CONF_COUNTRY,
     CONF_DEVICE_ID,
     CONF_REGION,
+    CONSUMABLE_SENSORS,
     H15_ALERT_BINARY_SENSORS,
     H15_CONTROL_KEYS,
     H15_PRIMARY_ALERT_KEYS,
@@ -30,6 +31,9 @@ _H15_ENTITY_SCHEMA_KEY = "_h15_entity_schema"
 _H15_ENTITY_SCHEMA_VERSION = 2
 _H15_CONTROLS_SCHEMA_KEY = "_h15_controls_schema"
 _VACUUM_ENTITY_SCHEMA_KEY = "_vacuum_entity_removed"
+_H15_UNREPORTED_KEY = "_h15_unreported_disabled"
+# Live reads answered while the unit is awake before a missing property counts as unsupported.
+H15_AWAKE_READS_TO_DECIDE = 3
 
 PLATFORMS = [
     Platform.SENSOR,
@@ -199,6 +203,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: DreameWetDryConfigEntry)
                 registry.async_update_entity(entity_entry.entity_id, disabled_by=er.RegistryEntryDisabler.INTEGRATION)
         hass.config_entries.async_update_entry(entry, data={**entry.data, "_h15_layout_schema": 2})
 
+    if coordinator.is_h15_pro_heat:
+        _sync_h15_unreported(hass, entry, coordinator)
+        state = [None]
+
+        @callback
+        def _on_update() -> None:
+            seen = (coordinator.h15_awake_reads, len(coordinator.props))
+            if seen != state[0]:
+                state[0] = seen
+                _sync_h15_unreported(hass, entry, coordinator)
+
+        entry.async_on_unload(coordinator.async_add_listener(_on_update))
+
     entry.runtime_data = coordinator
     coordinator.start_polling()
 
@@ -209,6 +226,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: DreameWetDryConfigEntry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+def _h15_unreported(coordinator: DreameWetDryCoordinator, unique_id: str) -> bool | None:
+    """Return whether the unit lacks the property behind this entity (None: not applicable)."""
+    setting_prefix = f"{coordinator.device_id}_h15_setting_"
+    if unique_id.startswith(setting_prefix):
+        siid, piid = unique_id[len(setting_prefix):].split("_")[:2]
+        return not coordinator.reports((int(siid), int(piid)))
+    for meta in CONSUMABLE_SENSORS:
+        if unique_id == f"{coordinator.device_id}_consumable_{meta['key']}_percent":
+            return not coordinator.reports(meta["max"])
+    return None
+
+
+def _sync_h15_unreported(
+    hass: HomeAssistant, entry: DreameWetDryConfigEntry, coordinator: DreameWetDryCoordinator
+) -> None:
+    """Disable H15 entities for properties the unit does not report, reversibly.
+
+    A sleeping H15 reports nothing, which looks like "unsupported", so a property
+    only counts as unsupported after several live reads answered while the unit
+    was awake. The entities are disabled, never removed, so a wrong guess keeps
+    their customizations; the ones disabled here are enabled again as soon as the
+    unit reports the property. A user's own choice is never touched.
+    """
+    registry = er.async_get(hass)
+    ours = set(entry.data.get(_H15_UNREPORTED_KEY, []))
+    decided = coordinator.h15_awake_reads >= H15_AWAKE_READS_TO_DECIDE
+    for entity_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        unique_id = entity_entry.unique_id
+        unreported = _h15_unreported(coordinator, unique_id)
+        if unreported is None:
+            continue
+        if not unreported and unique_id in ours:
+            ours.discard(unique_id)
+            if entity_entry.disabled_by == er.RegistryEntryDisabler.INTEGRATION:
+                registry.async_update_entity(entity_entry.entity_id, disabled_by=None)
+        elif unreported and decided and entity_entry.disabled_by is None:
+            ours.add(unique_id)
+            registry.async_update_entity(entity_entry.entity_id, disabled_by=er.RegistryEntryDisabler.INTEGRATION)
+    if ours != set(entry.data.get(_H15_UNREPORTED_KEY, [])):
+        hass.config_entries.async_update_entry(entry, data={**entry.data, _H15_UNREPORTED_KEY: sorted(ours)})
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: DreameWetDryConfigEntry) -> bool:

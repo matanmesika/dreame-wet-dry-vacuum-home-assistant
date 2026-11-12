@@ -107,7 +107,8 @@ class DreameH15Setting(CoordinatorEntity):
             if self._key in {(16, 1), (16, 2)} and self.coordinator.data.get("16.7") not in (4, "4"):
                 return False
             if self._key == (16, 1):
-                return self.coordinator.data.get("16.8") in (0, "0")
+                # A unit that never reports 16.8 has no hot water mode to wait for.
+                return self.coordinator.data.get("16.8", 0) in (0, "0")
         return True
 
     @property
