@@ -535,10 +535,26 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         return changes
 
+    async def _async_background_h15_discovery(self) -> None:
+        """Run the full H15 discovery scan without blocking setup or polls."""
+        try:
+            await self._async_discover_h15_properties()
+        except Exception as err:  # noqa: BLE001 - retried on the next poll
+            _LOGGER.warning("H15 property discovery failed, will retry: %s", err)
+            return
+        self.async_set_updated_data(self._build_data())
+
     async def _async_poll_h15_properties(self) -> None:
         """Refresh only properties already discovered for the H15."""
         if not self._h15_discovery_done:
-            await self._async_discover_h15_properties()
+            # The full H15 scan is ~50 sequential cloud calls (~1 min). Running it
+            # inside the first refresh made config-entry setup exceed its time
+            # budget and get cancelled, so run it in the background instead.
+            task = getattr(self, "_h15_discovery_task", None)
+            if task is None or task.done():
+                self._h15_discovery_task = self.hass.async_create_background_task(
+                    self._async_background_h15_discovery(), "dreame_h15_discovery"
+                )
             return
 
         if not self._h15_poll_keys:
