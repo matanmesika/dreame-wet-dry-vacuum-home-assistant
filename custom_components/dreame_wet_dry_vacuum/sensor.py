@@ -423,7 +423,11 @@ class DreameWetDryConsumableSensor(
         self._percentage = percentage and coordinator.is_h15_pro_heat
         self._left_key = meta["left"]
         self._max_key = meta["max"]
-        self._full_life_min = 0 if coordinator.is_h15_pro_heat else meta["full_life_min"]
+        # H15 does not report maximum life (6.6 / 19.2) in the cloud cache.
+        # Dreame rates the roller brush and filter at 60 h (3600 min); use that
+        # documented default so percentages work. A device-reported maximum,
+        # when available, still takes precedence below.
+        self._full_life_min = meta["full_life_min"]
         if coordinator.is_h15_pro_heat:
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
         if self._percentage:
@@ -469,7 +473,7 @@ class DreameWetDryConsumableSensor(
         attrs: dict[str, Any] = {
             "minutes_remaining": left,
             "full_life_hours": round(full / 60, 1),
-            "full_life_source": "device" if from_device else "unknown" if self.coordinator.is_h15_pro_heat else "default (60 h)",
+            "full_life_source": "device" if from_device else "default (60 h)",
         }
         if full <= 0 and self.coordinator.is_h15_pro_heat:
             attrs.pop("full_life_hours")
