@@ -1,0 +1,40 @@
+name: Publish v0.2.3-beta.2
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.release/v0.2.3-beta.2'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate manifest and packaged branding
+        run: |
+          python -m pip install pytest pytest-asyncio aiohttp pycryptodome paho-mqtt
+          python -m pytest -q
+          python -m compileall -q custom_components tests
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m = json.loads(Path('custom_components/dreame_wet_dry_vacuum/manifest.json').read_text())
+          assert m['version'] == '0.2.3-beta.2'
+          assert Path('custom_components/dreame_wet_dry_vacuum/brand/icon.png').is_file()
+          assert Path('custom_components/dreame_wet_dry_vacuum/brand/logo.png').is_file()
+          PY
+      - name: Publish experimental release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v0.2.3-beta.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing overwrite'
+            exit 1
+          fi
+          gh release create v0.2.3-beta.2 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "dreame-wet-dry-vacuum-home-assistant v0.2.3-beta.2" --notes-file RELEASE_NOTES_v0.2.3-beta.2.md --prerelease
