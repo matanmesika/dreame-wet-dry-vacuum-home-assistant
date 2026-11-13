@@ -121,6 +121,8 @@ def _setup_h15_sensors(
 
     coordinator.new_prop_callback = _add_new
     _add_new(set(coordinator.props))
+    async_add_entities([DreameH15CleanTimeSensor(coordinator, p) for p in ("today", "week", "month")])
+    async_add_entities([DreameH15CleanSessionsSensor(coordinator), DreameH15LastSessionSensor(coordinator)])
     async_add_entities([DreameH15MappingChangesSensor(coordinator),
                         *(DreameWetDryConsumableSensor(coordinator, meta, percentage=percentage)
                           for meta in CONSUMABLE_SENSORS
@@ -132,6 +134,110 @@ def _setup_h15_sensors(
         len(added),
         coordinator.model,
     )
+
+
+_CLEAN_PERIOD_NAMES = {"today": "Cleaning time today", "week": "Cleaning time (7 days)", "month": "Cleaning time (30 days)"}
+
+
+class DreameH15CleanTimeSensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntity):
+    """Floor-cleaning time from the app Cleaning Record (dirt-level split)."""
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:timer-outline"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = "min"
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, coordinator: DreameWetDryCoordinator, period: str) -> None:
+        super().__init__(coordinator)
+        self._period = period
+        self._attr_name = _CLEAN_PERIOD_NAMES[period]
+        self._attr_unique_id = f"{coordinator.device_id}_h15_clean_time_{period}"
+        self._attr_device_info = build_device_info(coordinator)
+
+    def _levels(self) -> dict[str, int] | None:
+        return (self.coordinator.h15_clean_stats or {}).get(self._period)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._levels() is not None
+
+    @property
+    def native_value(self) -> float | None:
+        levels = self._levels()
+        return round(sum(levels.values()) / 60, 1) if levels is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        levels = self._levels() or {}
+        total = sum(levels.values())
+        attrs: dict[str, Any] = {f"{k}_dirt_minutes": round(v / 60, 1) for k, v in levels.items()}
+        attrs.update({f"{k}_dirt_percent": (round(v * 100 / total) if total else 0) for k, v in levels.items()})
+        if self._period == "month":
+            attrs["daily_minutes"] = {d: round(s / 60, 1) for d, s in (self.coordinator.h15_clean_stats or {}).get("daily", {}).items()}
+        attrs["source"] = "Dreamehome Cleaning Record"
+        return attrs
+
+
+class DreameH15CleanSessionsSensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntity):
+    """Number of floor-cleaning sessions in the last 7 days."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Cleaning sessions (7 days)"
+    _attr_icon = "mdi:counter"
+    _attr_native_unit_of_measurement = "sessions"
+
+    def __init__(self, coordinator: DreameWetDryCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_h15_clean_sessions_week"
+        self._attr_device_info = build_device_info(coordinator)
+
+    @property
+    def available(self) -> bool:
+        return super().available and "sessions_week" in (self.coordinator.h15_clean_stats or {})
+
+    @property
+    def native_value(self) -> int | None:
+        return (self.coordinator.h15_clean_stats or {}).get("sessions_week")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        stats = self.coordinator.h15_clean_stats or {}
+        return {"sessions_30_days": stats.get("sessions_month"),
+                "recent_sessions": [{"time": s["time"], "minutes": round(s["seconds"] / 60, 1)}
+                                    for s in stats.get("sessions", [])[:10]]}
+
+
+class DreameH15LastSessionSensor(CoordinatorEntity[DreameWetDryCoordinator], SensorEntity):
+    """Start time of the most recent floor-cleaning session."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Last cleaning"
+    _attr_icon = "mdi:history"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, coordinator: DreameWetDryCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_h15_last_session"
+        self._attr_device_info = build_device_info(coordinator)
+
+    def _last(self) -> dict[str, Any] | None:
+        sessions = (self.coordinator.h15_clean_stats or {}).get("sessions") or []
+        return sessions[0] if sessions else None
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._last() is not None
+
+    @property
+    def native_value(self) -> datetime | None:
+        last = self._last()
+        return datetime.fromisoformat(last["time"]) if last else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        last = self._last() or {}
+        return {"duration_minutes": round(last.get("seconds", 0) / 60, 1)} if last else {}
 
 
 class DreameH15MappingChangesSensor(

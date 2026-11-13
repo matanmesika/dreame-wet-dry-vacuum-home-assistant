@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -11,6 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import DreameAPI, DreameAPIError, DreameAuthError
@@ -18,6 +20,7 @@ from .const import (
     CONSUMABLE_MAX_KEYS,
     DOMAIN,
     H15_BUTTON_COMMANDS,
+    H15_CONTROL_KEYS,
     H15_TARGETED_KEYS,
     KNOWN_BINARY_PROPS,
     KNOWN_MQTT_PROPS,
@@ -67,6 +70,18 @@ _H15_PIID_RANGE = range(1, 121)
 _H15_DISCOVERY_CHUNK = 100
 _H15_DIRECT_CHUNK = 50
 
+# Settings values the device only reports when the app opens a settings page.
+# They are cached across restarts so controls are not "unknown" after every
+# restart. The lifting-arm bitfield (24.1) is deliberately excluded: writes to
+# it are bit-merged, so a stale cached value must never be used as a base.
+_H15_PERSIST_EXCLUDE: set[tuple[int, int]] = {(24, 1)}
+_H15_SETTINGS_SAVE_DELAY = 10
+# Values the app assumes when the device never reports them
+# (HomePage registerDeviceData). 26.2 Smart Moisture Protection: 0 = on.
+_H15_APP_DEFAULTS: dict[tuple[int, int], Any] = {(26, 2): 0}
+_H15_EXTRAS_INTERVAL = timedelta(hours=1)
+_H15_SESSION_DUR_PIIDS = (189, 190, 191)
+
 
 class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Hold live device state from MQTT plus cloud polling."""
@@ -104,6 +119,15 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._h15_last_changes: dict[str, dict[str, Any]] = {}
         self._h15_last_scan: datetime | None = None
         self._h15_write_lock = asyncio.Lock()
+        self._h15_settings_store: Store = Store(
+            hass, 1, f"{DOMAIN}.{device_id}.h15_settings"
+        )
+        self._h15_settings_restored = False
+        self.h15_app_defaults: set[tuple[int, int]] = set()
+        self.h15_clean_stats: dict[str, Any] = {}
+        self.h15_firmware: dict[str, Any] = {}
+        self._h15_extras_at: datetime | None = None
+        self._h15_extras_task: asyncio.Task | None = None
 
     @property
     def model(self) -> str:
@@ -286,6 +310,7 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Apply MQTT properties on the Home Assistant event loop."""
         new_keys = set(state) - set(self.props)
         self.props.update(state)
+        self.h15_app_defaults.difference_update(state)
 
         if self._is_h15:
             for siid, piid in sorted(state):
@@ -293,6 +318,8 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if key not in self._h15_poll_keys:
                     self._h15_poll_keys.append(key)
             self._h15_poll_keys.sort(key=self._property_sort_key)
+            if any(self._h15_is_persisted(pair) for pair in state):
+                self._schedule_h15_settings_save()
 
         if new_keys and self.new_prop_callback:
             self.new_prop_callback(new_keys)
@@ -437,6 +464,142 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         usable.update(live)
         return usable
 
+    @staticmethod
+    def _h15_is_persisted(pair: tuple[int, int]) -> bool:
+        return pair in H15_CONTROL_KEYS and pair not in _H15_PERSIST_EXCLUDE
+
+    async def _async_restore_h15_settings(self) -> None:
+        """Seed settings values cached from earlier sessions (live data wins)."""
+        self._h15_settings_restored = True
+        try:
+            stored = await self._h15_settings_store.async_load() or {}
+        except Exception as err:  # noqa: BLE001 - cache only, never fatal
+            _LOGGER.debug("H15 settings cache could not be loaded: %s", err)
+            return
+        restored = 0
+        for key, value in (stored.get("values") or {}).items():
+            try:
+                siid_text, piid_text = key.split(".", 1)
+                pair = (int(siid_text), int(piid_text))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if value is None or not self._h15_is_persisted(pair) or pair in self.props:
+                continue
+            self.props[pair] = value
+            restored += 1
+        if restored:
+            _LOGGER.debug("Restored %s cached H15 setting value(s)", restored)
+        for pair, value in _H15_APP_DEFAULTS.items():
+            if pair not in self.props:
+                self.props[pair] = value
+                self.h15_app_defaults.add(pair)
+
+    @callback
+    def _schedule_h15_extras(self) -> None:
+        """Hourly read-only app data: cleaning record and firmware check."""
+        now = datetime.now(UTC)
+        if self._h15_extras_at and now - self._h15_extras_at < _H15_EXTRAS_INTERVAL:
+            return
+        if self._h15_extras_task and not self._h15_extras_task.done():
+            return
+        self._h15_extras_at = now
+        self._h15_extras_task = self.hass.async_create_background_task(
+            self._async_refresh_h15_extras(), "dreame_h15_extras"
+        )
+
+    async def _async_refresh_h15_extras(self) -> None:
+        tz_name = str(self.hass.config.time_zone or "UTC")
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(tz_name)
+        except Exception:  # noqa: BLE001
+            tz = UTC
+        now = datetime.now(tz)
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        begin = today - timedelta(days=29)
+        begin_ms, end_ms = int(begin.timestamp() * 1000), int(now.timestamp() * 1000)
+        stats: dict[str, Any] = {}
+        try:
+            levels = {}
+            for name, piid in (("light", 64), ("moderate", 65), ("heavy", 66)):
+                rows = await self.api.get_clean_statistics(
+                    self.device_id, piid, 1, begin_ms, end_ms, tz_name
+                )
+                for row in rows:
+                    day = str(row.get("day") or "").split(" ")[0]
+                    if not day:
+                        continue
+                    try:
+                        seconds = int(float(row.get("data") or 0))
+                    except (TypeError, ValueError):
+                        seconds = 0
+                    levels.setdefault(day, {"light": 0, "moderate": 0, "heavy": 0})[name] = seconds
+            days = dict(sorted(levels.items()))
+            today_key = today.strftime("%Y-%m-%d")
+            week_keys = {(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)}
+            def _sum(keys):
+                out = {"light": 0, "moderate": 0, "heavy": 0}
+                for k in keys:
+                    for lvl, sec in days.get(k, {}).items():
+                        out[lvl] += sec
+                return out
+            stats["today"] = _sum({today_key})
+            stats["week"] = _sum(week_keys)
+            stats["month"] = _sum(set(days))
+            stats["daily"] = {k: sum(v.values()) for k, v in days.items()}
+        except DreameAPIError as err:
+            _LOGGER.debug("H15 cleaning statistics unavailable: %s", err)
+        try:
+            sessions = await self.api.get_clean_sessions(self.device_id, begin_ms, end_ms)
+            parsed = []
+            for item in sessions:
+                try:
+                    content = json.loads(item.get("valueStr") or "[]")
+                except (TypeError, ValueError):
+                    content = []
+                seconds = sum(
+                    int(c.get("value") or 0) for c in content
+                    if isinstance(c, dict) and c.get("piid") in _H15_SESSION_DUR_PIIDS
+                )
+                try:
+                    ts = datetime.fromtimestamp(int(item.get("eventTime")) / 1000, UTC)
+                except (TypeError, ValueError):
+                    continue
+                parsed.append({"time": ts.isoformat(), "seconds": seconds})
+            parsed.sort(key=lambda s: s["time"], reverse=True)
+            stats["sessions"] = parsed[:20]
+            week_start = (today - timedelta(days=6)).astimezone(UTC).isoformat()
+            stats["sessions_week"] = sum(1 for s in parsed if s["time"] >= week_start)
+            stats["sessions_month"] = len(parsed)
+        except DreameAPIError as err:
+            _LOGGER.debug("H15 cleaning sessions unavailable: %s", err)
+        if stats:
+            stats["updated"] = datetime.now(UTC).isoformat()
+            self.h15_clean_stats = stats
+        try:
+            self.h15_firmware = await self.api.check_device_version(self.device_id)
+        except DreameAPIError as err:
+            _LOGGER.debug("H15 firmware check unavailable: %s", err)
+        self.async_set_updated_data(self._build_data())
+
+    @callback
+    def _schedule_h15_settings_save(self) -> None:
+        """Persist the latest known settings values (debounced)."""
+        if not self._is_h15:
+            return
+
+        def _data() -> dict[str, Any]:
+            return {
+                "values": {
+                    f"{siid}.{piid}": value
+                    for (siid, piid), value in self.props.items()
+                    if value is not None and self._h15_is_persisted((siid, piid))
+                    and (siid, piid) not in self.h15_app_defaults
+                }
+            }
+
+        self._h15_settings_store.async_delay_save(_data, _H15_SETTINGS_SAVE_DELAY)
+
     def _apply_h15_values(self, values: dict[str, Any]) -> set[tuple[int, int]]:
         """Apply returned H15 values and return newly discovered property keys."""
         new_keys: set[tuple[int, int]] = set()
@@ -453,11 +616,13 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if pair not in self.props:
                 new_keys.add(pair)
             self.props[pair] = value
+            self.h15_app_defaults.discard(pair)
 
             if key not in self._h15_poll_keys:
                 self._h15_poll_keys.append(key)
 
         self._h15_poll_keys.sort(key=self._property_sort_key)
+        self._schedule_h15_settings_save()
         return new_keys
 
     async def _async_discover_h15_properties(self) -> None:
@@ -565,6 +730,10 @@ class DreameWetDryCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Refresh cloud snapshot and cached properties."""
+        if self._is_h15 and not self._h15_settings_restored:
+            await self._async_restore_h15_settings()
+        if self._is_h15:
+            self._schedule_h15_extras()
         try:
             snapshot = await self.api.get_device_snapshot(self.device_id)
         except DreameAuthError as err:

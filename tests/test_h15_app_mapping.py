@@ -71,7 +71,7 @@ def test_level_labels_match_app(key, ref):
 
 def test_cleaning_mode_labels_match_app():
     for raw, text in REF["custom_mode"].items():
-        assert _label((16, 7), raw) == text.removesuffix(" Mode")
+        assert _label((16, 7), raw) == text  # exact app wording (Quiet Mode, ...)
 
 
 @pytest.mark.parametrize("full,left,app_percent,app_hours", REF["consumables"]["samples"])

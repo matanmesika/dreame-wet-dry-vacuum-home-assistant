@@ -35,9 +35,9 @@ def test_h15_core_app_enum_mappings() -> None:
     assert H15_WATER_LEVEL_MAP[2] == "Standard"
     assert H15_WATER_LEVEL_MAP[3] == "High"
     assert H15_CLEANING_MODE_MAP == {
-        1: "Quiet",
-        3: "Turbo",
-        4: "Personalized",
+        1: "Quiet Mode",
+        3: "Turbo Mode",
+        4: "Personalized Mode",
     }
     assert H15_HOT_WATER_MAP == {
         0: "Off",
@@ -54,9 +54,9 @@ def test_h15_device_setting_mappings() -> None:
         2: "Turbo",
     }
     assert H15_MOISTURE_SENSITIVITY_MAP == {
-        2: "Low",
-        3: "Medium",
-        4: "High",
+        2: "Low Sensitivity",
+        3: "Medium Sensitivity",
+        4: "High Sensitivity",
     }
 
     assert H15_PROPERTY_META[(16, 1)]["name"] == "Suction setting"

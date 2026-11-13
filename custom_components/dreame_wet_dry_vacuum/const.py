@@ -355,9 +355,9 @@ H15_WATER_LEVEL_MAP = {
 }
 
 H15_CLEANING_MODE_MAP = {
-    1: "Quiet",
-    3: "Turbo",
-    4: "Personalized",
+    1: "Quiet Mode",
+    3: "Turbo Mode",
+    4: "Personalized Mode",
 }
 
 H15_HOT_WATER_MAP = {
@@ -374,9 +374,9 @@ H15_TRACTION_MAP = {
 }
 
 H15_MOISTURE_SENSITIVITY_MAP = {
-    2: "Low",
-    3: "Medium",
-    4: "High",
+    2: "Low Sensitivity",
+    3: "Medium Sensitivity",
+    4: "High Sensitivity",
 }
 
 H15_SELF_CLEAN_MODE_MAP = {
@@ -1027,7 +1027,7 @@ H15_SELECT_SETTINGS: dict[tuple[int, int], dict[int, str]] = {
     (26, 3): H15_MOISTURE_SENSITIVITY_MAP,
     (1, 67): H15_DETERGENT_MODE_MAP,
     (25, 1): {1: "Mild", 2: "Standard", 3: "Thermal"},
-    (1, 77): {0: "Off", 10000000: "Once", 1111111: "Every day", 11111: "Monday to Friday", 1100000: "Saturday and Sunday"},
+    (1, 77): {0: "None", 10000000: "Once", 1111111: "Whole Week", 11111: "Weekday", 1100000: "Weekends"},
 }
 
 # (on, off) values differ from the legacy H14 switch implementation.

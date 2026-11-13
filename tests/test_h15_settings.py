@@ -109,7 +109,6 @@ def test_dry_command_differs_from_super_speed_setting(mode, command):
 @pytest.mark.parametrize('command,props', [
     ('start_self_clean', {(1, 28): 16, (3, 1): 100, (1, 8): 4}),
     ('start_self_clean', {(1, 28): 7, (3, 1): 19, (1, 8): 4}),
-    ('start_self_clean', {(1, 28): 7, (3, 1): 100}),
     ('start_self_dry', {(1, 28): 28, (1, 10): 1}),
     ('resume_self_clean', {(1, 28): 7}),
     ('stop_self_dry', {(1, 28): 7}),
@@ -209,3 +208,8 @@ def test_arm_select_preserves_reserved_bit_for_every_combination():
         assert build_h15_write_plan((24, 1), raw, {(24, 1): 2}) == {(24, 1): raw | 2}
     with pytest.raises(ValueError):
         build_h15_write_plan((24, 1), 0, {})
+
+
+def test_start_self_clean_without_reported_mode_uses_app_auto_adjust():
+    """The app starts with the selected wash mode; unknown mode falls back to Auto-Adjust (4)."""
+    assert build_h15_command_plan('start_self_clean', {(1, 28): 7, (3, 1): 100}) == {(1, 1): 4}

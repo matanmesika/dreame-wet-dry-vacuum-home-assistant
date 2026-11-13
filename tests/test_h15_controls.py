@@ -37,6 +37,15 @@ def component(monkeypatch):
     class PlatformEntity:
         pass
 
+    class _FakeStore:
+        """Settings cache stub: nothing stored, saves are dropped."""
+        def __init__(self, *args, **kwargs):
+            pass
+        async def async_load(self):
+            return None
+        def async_delay_save(self, *args, **kwargs):
+            pass
+
     adapters = {
         "homeassistant": {}, "homeassistant.components": {},
         "homeassistant.helpers": {},
@@ -57,13 +66,14 @@ def component(monkeypatch):
         "homeassistant.const": {
             "EntityCategory": types.SimpleNamespace(CONFIG="config", DIAGNOSTIC="diagnostic"),
             "CONF_PASSWORD": "password", "CONF_USERNAME": "username",
-            "Platform": types.SimpleNamespace(SENSOR="sensor", BINARY_SENSOR="binary_sensor", SWITCH="switch", NUMBER="number", SELECT="select", BUTTON="button"),
+            "Platform": types.SimpleNamespace(SENSOR="sensor", BINARY_SENSOR="binary_sensor", SWITCH="switch", NUMBER="number", SELECT="select", BUTTON="button", UPDATE="update"),
         },
         "homeassistant.core": {"HomeAssistant": Generic, "callback": lambda f: f},
         "homeassistant.exceptions": {
             "ConfigEntryAuthFailed": HAError, "HomeAssistantError": HAError, "ConfigEntryNotReady": HAError,
         },
         "homeassistant.helpers.event": {"async_track_time_interval": lambda *args: None},
+        "homeassistant.helpers.storage": {"Store": _FakeStore},
         "homeassistant.helpers.device_registry": {"DeviceInfo": dict},
         "homeassistant.helpers.entity_platform": {"AddEntitiesCallback": Generic},
         "homeassistant.helpers.update_coordinator": {
@@ -229,9 +239,9 @@ def test_rejected_batch_keeps_local_setting_values(component):
     before = dict(coordinator.props)
     select = component["select"].DreameH15Select(coordinator, (16, 7))
     with pytest.raises(component["error"]):
-        asyncio.run(select.async_select_option("Turbo"))
+        asyncio.run(select.async_select_option("Turbo Mode"))
     assert coordinator.props == before
-    assert select.current_option == "Personalized"
+    assert select.current_option == "Personalized Mode"
 
 
 def test_suction_unavailable_while_hot_and_arm_unavailable_if_unknown(component):
@@ -584,14 +594,15 @@ def test_h15_consumables_use_app_percentage_and_preserve_minutes(component, rema
 def test_consumable_missing_maximum_is_unknown_on_h15_and_unchanged_on_h14(component):
     from custom_components.dreame_wet_dry_vacuum.const import CONSUMABLE_SENSORS
     meta = CONSUMABLE_SENSORS[0]
-    for model, unit, value in (("dreame.hold.w2449e", "%", None), ("dreame.hold.w2306e", "h", 56.9)):
+    # H15: a missing device maximum falls back to the app's 60-hour roller-brush life.
+    for model, unit, value in (("dreame.hold.w2449e", "%", 94), ("dreame.hold.w2306e", "h", 56.9)):
         coordinator = make_coordinator(component, model)
         coordinator.data.update({"6.7": 3413, "6.6": -1})
         entity = component["sensor"].DreameWetDryConsumableSensor(coordinator, meta, percentage=True)
         assert entity._attr_native_unit_of_measurement == unit
         assert entity.native_value == value
-        if value is None:
-            assert "percent_remaining" not in entity.extra_state_attributes
+        if model == "dreame.hold.w2449e":
+            assert entity.extra_state_attributes["full_life_source"] == "default (60 h)"
         else:
             assert entity.extra_state_attributes["percent_remaining"] == 95
 
@@ -698,3 +709,51 @@ def test_awake_refresh_failure_is_non_fatal(component, monkeypatch):
     monkeypatch.setattr(component["coordinator"].asyncio, "sleep", AsyncMock())
     coordinator._apply_mqtt_state({(3, 1): 90})
     asyncio.run(scheduled[0])  # must not raise
+
+
+def test_settings_cache_restores_app_settings_but_never_the_arm_bitfield(component):
+    coordinator = make_coordinator(component)
+    coordinator.props.clear()
+    coordinator.props[(1, 8)] = 3  # live value wins over the cache
+
+    class Cache:
+        async def async_load(self):
+            return {"values": {"26.1": 0, "1.8": 2, "24.1": 5, "3.1": 50}}
+
+        def async_delay_save(self, *args, **kwargs):
+            pass
+
+    coordinator._h15_settings_store = Cache()
+    asyncio.run(coordinator._async_restore_h15_settings())
+    assert coordinator.props[(26, 1)] == 0
+    assert coordinator.props[(1, 8)] == 3
+    assert (24, 1) not in coordinator.props  # bit-merged writes must not use a stale base
+    assert (3, 1) not in coordinator.props  # telemetry is never cached
+    # Smart Moisture Protection: the app treats an unreported value as on (0).
+    assert coordinator.props[(26, 2)] == 0
+    assert (26, 2) in coordinator.h15_app_defaults
+    coordinator._apply_h15_values({"26.2": 1})
+    assert (26, 2) not in coordinator.h15_app_defaults
+
+
+def test_cleaning_record_sums_dirt_levels_and_sessions(component):
+    coordinator = make_coordinator(component)
+    coordinator.hass = types.SimpleNamespace(config=types.SimpleNamespace(time_zone="UTC"))
+    from datetime import UTC, datetime
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    rows = {64: [{"day": f"{today} 00:00:00/{today} 23:59:59", "data": "240"}],
+            65: [{"day": f"{today} 00:00:00/{today} 23:59:59", "data": "90"}],
+            66: [{"day": f"{today} 00:00:00/{today} 23:59:59", "data": "0"}]}
+    coordinator.api.get_clean_statistics = AsyncMock(side_effect=lambda did, piid, *a: rows[piid])
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    coordinator.api.get_clean_sessions = AsyncMock(return_value=[
+        {"eventTime": now_ms, "valueStr": '[{"piid":189,"value":60},{"piid":190,"value":12},{"piid":7,"value":999}]'},
+    ])
+    coordinator.api.check_device_version = AsyncMock(return_value={"curVersion": "2.1.8_1047", "hasNewFirmware": False})
+    coordinator.async_set_updated_data = lambda data: None
+    asyncio.run(coordinator._async_refresh_h15_extras())
+    stats = coordinator.h15_clean_stats
+    assert stats["today"] == {"light": 240, "moderate": 90, "heavy": 0}
+    assert stats["sessions"][0]["seconds"] == 72
+    assert stats["sessions_week"] == 1
+    assert coordinator.h15_firmware["curVersion"] == "2.1.8_1047"
