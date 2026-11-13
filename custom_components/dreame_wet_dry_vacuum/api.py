@@ -683,14 +683,19 @@ class DreameAPI:
         )
         data = result.get("data")
         if not isinstance(data, dict):
-            # The H15 executes the command, but the cloud often answers without
-            # a per-row acknowledgement payload. Only an explicit rejection is a
-            # failure; an unparseable reply is treated as sent.
+            # Verified on a real H15 Pro Heat: the cloud answers code 80001
+            # ("device may be offline, command timed out") even though the device
+            # receives and executes the command. Treat only that code as sent;
+            # the result is confirmed afterwards from device telemetry.
+            if _parse_prop_value(result.get("code")) == 80001:
+                _LOGGER.warning(
+                    "H15 set_properties sent; cloud timed out waiting for the device reply (80001)"
+                )
+                return True
             _LOGGER.warning(
-                "H15 set_properties sent; cloud reply had no acknowledgement payload: %s",
-                str(result)[:300],
+                "H15 set_properties was not acknowledged (cloud reply: %s)", str(result)[:300]
             )
-            return True
+            return False
         outer_code = _parse_prop_value(data.get("code", 0)) if isinstance(data, dict) else None
         rows = data.get("result") if isinstance(data, dict) and outer_code == 0 else None
         if not isinstance(rows, list) or len(rows) != len(params):
