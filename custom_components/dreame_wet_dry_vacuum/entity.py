@@ -117,6 +117,8 @@ class DreameH15Setting(CoordinatorEntity):
             "raw_value": self._raw,
             "mapping_status": H15_PROPERTY_META[self._key]["confidence"],
             "write_source": "Dreamehome H15 app",
+            **({"value_source": "app default (device has not reported it)"}
+               if self._key in getattr(self.coordinator, "h15_app_defaults", ()) else {}),
         }
 
     async def _write(self, value: int) -> None:

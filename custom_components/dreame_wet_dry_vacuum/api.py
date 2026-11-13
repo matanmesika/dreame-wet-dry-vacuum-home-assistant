@@ -338,6 +338,46 @@ class DreameAPI:
             {"did": str(device_id)},
         )
 
+    async def get_clean_statistics(
+        self, device_id: str, piid: int, stat_type: int, begin_ms: int, end_ms: int, time_zone: str
+    ) -> list[dict[str, Any]]:
+        """App CleanLog chart data: per-period seconds at one dirt level (1.64-1.66)."""
+        result = await self._authed_post(
+            self._base_url + "/dreame-iot-data/iotaggr/statitics-data",
+            {"did": str(device_id), "uid": self.uid, "statisticsType": stat_type,
+             "timeZoneId": time_zone, "siid": 1, "piid": piid,
+             "beginDate": begin_ms, "endDate": end_ms},
+        )
+        if not isinstance(result, dict) or result.get("code") != 0:
+            raise DreameAPIError(f"statistics request rejected: {str(result)[:200]}")
+        data = result.get("data")
+        return data if isinstance(data, list) else []
+
+    async def get_clean_sessions(
+        self, device_id: str, begin_ms: int, end_ms: int
+    ) -> list[dict[str, Any]]:
+        """App CleanLog session list (event siid 30 / eiid 1)."""
+        result = await self._authed_post(
+            self._base_url + "/dreame-iot-data/iotaggr/event-data",
+            {"did": str(device_id), "uid": self.uid, "siid": 30, "eiid": 1,
+             "beginDate": begin_ms, "endDate": end_ms},
+        )
+        if not isinstance(result, dict) or result.get("code") != 0:
+            raise DreameAPIError(f"session request rejected: {str(result)[:200]}")
+        data = result.get("data")
+        return data if isinstance(data, list) else []
+
+    async def check_device_version(self, device_id: str) -> dict[str, Any]:
+        """App OTA page firmware check (read-only)."""
+        result = await self._authed_post(
+            self._base_url + "/dreame-user-iot/iotuserbind/checkDeviceVersionV2",
+            {"did": str(device_id)},
+        )
+        if not isinstance(result, dict) or result.get("code") != 0:
+            raise DreameAPIError(f"version check rejected: {str(result)[:200]}")
+        data = result.get("data")
+        return data if isinstance(data, dict) else {}
+
     async def get_dev_otc_info(self, device_id: str) -> dict[str, Any]:
         """Return the app-facing devOTCInfo payload."""
         return await self._authed_post(
