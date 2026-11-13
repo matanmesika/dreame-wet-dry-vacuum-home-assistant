@@ -1240,9 +1240,16 @@ def build_h15_command_plan(command: str, props: dict[tuple[int, int], Any]) -> d
     if command == "start_self_clean":
         if _current(props, (3, 1)) < 20:
             raise ValueError("Self-cleaning requires at least 20% battery")
-        mode = _current(props, (1, 8))
+        # The cloud cache never reports the self-cleaning mode (1.8), so it is
+        # usually unknown. Fall back to Auto-Adjust (4), the app default, so the
+        # start button works; a known/selected mode is still used as-is.
+        mode = props.get((1, 8))
+        try:
+            mode = int(mode)
+        except (TypeError, ValueError):
+            mode = None
         if mode not in H15_SELECT_SETTINGS[(1, 8)]:
-            raise ValueError("Unknown self-cleaning mode")
+            mode = 4
         return {(1, 1): mode}
     mode = _current(props, (1, 10))
     if mode not in H15_DRY_COMMAND_VALUES:
