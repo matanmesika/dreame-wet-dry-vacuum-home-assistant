@@ -682,6 +682,15 @@ class DreameAPI:
             },
         )
         data = result.get("data")
+        if not isinstance(data, dict):
+            # The H15 executes the command, but the cloud often answers without
+            # a per-row acknowledgement payload. Only an explicit rejection is a
+            # failure; an unparseable reply is treated as sent.
+            _LOGGER.warning(
+                "H15 set_properties sent; cloud reply had no acknowledgement payload: %s",
+                str(result)[:300],
+            )
+            return True
         outer_code = _parse_prop_value(data.get("code", 0)) if isinstance(data, dict) else None
         rows = data.get("result") if isinstance(data, dict) and outer_code == 0 else None
         if not isinstance(rows, list) or len(rows) != len(params):
