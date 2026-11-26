@@ -194,7 +194,7 @@ For reference, here is the checklist HACS uses to validate a custom **integratio
 | `manifest.json` `codeowners` | ✅ | `["@morcus"]` |
 | `hacs.json` in repository root | ✅ | `name`, `content_in_root: false`, `render_readme`, `homeassistant` |
 | `README.md` in repository root | ✅ | this file (`render_readme: true`) |
-| `LICENSE` in repository root | ✅ | The Unlicense (public domain) |
+| `LICENSE` in repository root | ✅ | MIT |
 | CI validation (HACS Action + hassfest) | ✅ | `.github/workflows/validate.yml` |
 | Brand assets (`brand/icon.png`) | ✅ | local legacy Dreame D artwork — see note below |
 | Repository is **public** on GitHub | ✅ | set to *Public* |
@@ -287,4 +287,4 @@ This project is provided "as is", without warranty of any kind. It uses an unoff
 
 ## License
 
-Released into the **public domain** under [The Unlicense](LICENSE). Do whatever you want with it — copy, modify, publish, sell, fork — no attribution required.
+[MIT](LICENSE) © 2026 Matan Mesika. Based on [morcus/dreame-wet-dry-vacuum-home-assistant](https://github.com/morcus/dreame-wet-dry-vacuum-home-assistant), which its author released into the public domain under The Unlicense.
