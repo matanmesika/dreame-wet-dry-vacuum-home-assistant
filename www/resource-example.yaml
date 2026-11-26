@@ -1,4 +1,0 @@
-# Add through Settings > Dashboards > Resources (advanced mode),
-# or merge into the resources section of a YAML-managed dashboard.
-url: /local/community/Dreame-device-card/dreame-device-card.js
-type: module
