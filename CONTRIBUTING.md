@@ -18,8 +18,6 @@ Run the applicable checks before submitting:
 python -m compileall -q custom_components
 ruff check custom_components tests
 pytest -q
-node --check www/dreame-device-card.js
-node --test tests/test_device_card.cjs
 ```
 
 For mapping changes, update `H15_MAPPING.md` with the observed source/value and confidence level. Tests and successful cloud calls do not replace physical verification. State exactly which model and firmware were tested and mark any remaining uncertainty.
