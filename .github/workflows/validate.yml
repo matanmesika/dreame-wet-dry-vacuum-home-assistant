@@ -65,24 +65,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  frontend:
-    name: Dashboard card tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-      - name: Check card syntax and behavior
-        run: |
-          node --check www/dreame-device-card.js
-          node --test tests/test_device_card.cjs
-
   package:
     name: Validated work-in-progress test bundle
     # HACS also checks owner-controlled repository metadata (issues/topics).
     # Keep the test bundle available when only that external metadata is pending.
-    needs: [hassfest, lint, tests, frontend]
+    needs: [hassfest, lint, tests]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -90,7 +77,7 @@ jobs:
         run: >-
           git archive --format=zip --output=dreame-wet-dry-vacuum-review.zip
           HEAD custom_components/dreame_wet_dry_vacuum README.md H15_MAPPING.md
-          CONTRIBUTING.md SECURITY.md info.md INSTALL_HE.md LICENSE tests pyproject.toml www
+          CONTRIBUTING.md SECURITY.md info.md INSTALL_HE.md LICENSE tests pyproject.toml
       - name: Upload review bundle (not a release)
         uses: actions/upload-artifact@v4
         with:
